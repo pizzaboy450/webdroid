@@ -10,27 +10,26 @@ jobs:
   redroid:
     runs-on: ubuntu-latest
     steps:
-      - name: Install Kernel Modules
+      - name: Install Kernel Extras
         run: |
           sudo apt-get update
           sudo apt-get install -y linux-modules-extra-$(uname -r)
-          sudo modprobe binder_linux
-          sudo modprobe ashmem_linux
+          # We only need binder now; ashmem is replaced by memfd
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
 
-      - name: Start Redroid (Android 11)
+      - name: Start Redroid (Using memfd)
         run: |
-          # Start the Android core
           docker run -d --privileged \
             --name redroid \
             -p 5555:5555 \
             redroid/redroid:11.0.0-latest \
             androidboot.redroid_width=1920 \
             androidboot.redroid_height=1080 \
-            androidboot.redroid_dpi=480
+            androidboot.redroid_dpi=480 \
+            androidboot.use_memfd=true # This replaces the need for ashmem
 
       - name: Start VNC Web Server
         run: |
-          # This container grabs the Redroid screen and puts it on a website
           docker run -d \
             --name vnc-web \
             --link redroid:android \
@@ -39,9 +38,12 @@ jobs:
 
       - name: Tunnel with Ngrok
         run: |
+          # Install Ngrok agent
           curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
           echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
           sudo apt update && sudo apt install ngrok
+          
+          # Start Tunnel
           ngrok config add-authtoken ${{ github.event.inputs.ngrok_token }}
           ngrok http 6080 --log=stdout &
           sleep 3600
