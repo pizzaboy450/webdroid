@@ -36,6 +36,26 @@ jobs:
               exit 1
           }
 
+      - name: Install Chocolatey
+        run: |
+          Set-ExecutionPolicy Bypass -Scope Process -Force
+          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+          iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+
+      - name: Install Python and Dependencies
+        run: |
+          choco install python -y --version=3.11.0
+          refreshenv
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          
+          Write-Host "Installing websockify and numpy..."
+          python -m pip install --upgrade pip
+          python -m pip install websockify numpy
+          
+          # Verify installation
+          python --version
+          python -m pip show websockify
+
       - name: Install TightVNC Server
         run: |
           $vncUrl = "https://www.tightvnc.com/download/2.8.84/tightvnc-2.8.84-gpl-setup-64bit.msi"
@@ -45,7 +65,6 @@ jobs:
           Invoke-WebRequest -Uri $vncUrl -OutFile $installerPath
           
           Write-Host "Installing TightVNC..."
-          # Silent install with password set via registry after install
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", `
             "/quiet", "/norestart", `
             "ADDLOCAL=Server", `
@@ -59,58 +78,107 @@ jobs:
 
       - name: Configure VNC Server
         run: |
-          # Set VNC password (TightVNC stores encrypted password in registry)
           $vncPasswd = $env:VNC_PASSWORD
           
-          # Stop service to configure
           Stop-Service -Name "tvnserver" -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 2
           
-          # Configure TightVNC via registry
           $regPath = "HKLM:\SOFTWARE\TightVNC\Server"
           Set-ItemProperty -Path $regPath -Name "UseVncAuthentication" -Value 1 -Force
           Set-ItemProperty -Path $regPath -Name "AllowLoopback" -Value 1 -Force
           Set-ItemProperty -Path $regPath -Name "LoopbackOnly" -Value 0 -Force
           Set-ItemProperty -Path $regPath -Name "AcceptRfbConnections" -Value 1 -Force
           
-          # Set password using tvnserver utility
           & "C:\Program Files\TightVNC\tvnserver.exe" -silent -controlservice -shareall
           & "C:\Program Files\TightVNC\tvnserver.exe" -silent -controlservice -shareprimary
           & "C:\Program Files\TightVNC\tvnserver.exe" -silent -set AdminPasswordPlain="$vncPasswd"
           & "C:\Program Files\TightVNC\tvnserver.exe" -silent -set ControlPassword="$vncPasswd"
           
-          # Restart service
           Start-Service -Name "tvnserver"
           Start-Sleep -Seconds 3
           
-          # Verify service is running
           $service = Get-Service -Name "tvnserver"
           if ($service.Status -ne "Running") {
               Write-Error "VNC Server failed to start"
               exit 1
           }
           
-          Write-Host "VNC Server configured and running"
+          Write-Host "✓ VNC Server configured and running on port 5900"
 
-      - name: Configure Firewall for VNC
+      - name: Configure Firewall for VNC and WebSocket
         run: |
-          # Remove existing rules to avoid duplicates
+          # Remove existing rules
           netsh advfirewall firewall delete rule name="VNC-Tailscale" 2>$null
+          netsh advfirewall firewall delete rule name="Websockify-Tailscale" 2>$null
           
           # Allow VNC port 5900
           netsh advfirewall firewall add rule name="VNC-Tailscale" `
             dir=in action=allow protocol=TCP localport=5900
           
-          Write-Host "Firewall configured for VNC"
+          # Allow WebSocket port 6080
+          netsh advfirewall firewall add rule name="Websockify-Tailscale" `
+            dir=in action=allow protocol=TCP localport=6080
+          
+          Write-Host "✓ Firewall configured for VNC (5900) and WebSocket (6080)"
+
+      - name: Start Websockify Proxy
+        run: |
+          Write-Host "Starting websockify proxy..."
+          
+          # Create a startup script for websockify
+          $scriptContent = @"
+import sys
+import os
+
+# Add Python Scripts to PATH
+scripts_path = r'C:\Python311\Scripts'
+if scripts_path not in os.environ['PATH']:
+    os.environ['PATH'] = scripts_path + os.pathsep + os.environ['PATH']
+
+# Now run websockify
+from websockify import websockifyserver
+
+websockifyserver.websockify_init()
+"@
+          
+          $scriptPath = "$env:TEMP\start_websockify.py"
+          $scriptContent | Out-File -FilePath $scriptPath -Encoding UTF8
+          
+          # Start websockify as background process
+          $websockifyCmd = "python -m websockify --web=. 0.0.0.0:6080 localhost:5900"
+          
+          Start-Process powershell -ArgumentList "-NoExit", "-Command", $websockifyCmd -WindowStyle Hidden
+          
+          Start-Sleep -Seconds 5
+          
+          # Verify websockify is running
+          $wsProcess = Get-Process python -ErrorAction SilentlyContinue | Where-Object {
+              $_.CommandLine -like "*websockify*"
+          }
+          
+          if ($wsProcess) {
+              Write-Host "✓ Websockify proxy started successfully on port 6080"
+          } else {
+              Write-Warning "⚠ Could not verify websockify process, but continuing..."
+          }
+          
+          # Test local connection
+          Start-Sleep -Seconds 2
+          try {
+              $test = Test-NetConnection -ComputerName localhost -Port 6080 -WarningAction SilentlyContinue
+              if ($test.TcpTestSucceeded) {
+                  Write-Host "✓ WebSocket proxy is accessible on port 6080"
+              }
+          } catch {
+              Write-Host "WebSocket test inconclusive, will verify via Tailscale"
+          }
 
       - name: Download MuMu Player
         run: |
-          # MuMu Player official download page redirects, so we'll use direct CDN link
           $installerPath = "$env:TEMP\MuMuInstaller.exe"
           
           Write-Host "Downloading MuMu Player..."
           
-          # Try multiple sources
           $sources = @(
               "https://mumu.cae5df2a.c3p0.dianlianyule.com/MuMuPlayer-12.0.exe",
               "https://dl-sh-mumu-static.mumu.163.com/installer/MuMuPlayer-12.0.exe",
@@ -136,7 +204,6 @@ jobs:
           
           if (-not $downloaded) {
               Write-Host "All download sources failed. Attempting to download via official website..."
-              # Use Invoke-WebRequest to follow redirects from official page
               try {
                   $response = Invoke-WebRequest -Uri "https://mumu.163.com/" -UserAgent "Mozilla/5.0" -MaximumRedirection 5
                   $downloadLink = ($response.Links | Where-Object { $_.href -like "*.exe" -or $_.href -like "*download*" } | Select-Object -First 1).href
@@ -177,8 +244,6 @@ jobs:
           
           Write-Host "Installing MuMu Player (this may take 5-10 minutes)..."
           
-          # Silent install parameters for MuMu Player
-          # /S for silent, /D for directory (optional)
           $installArgs = @("/S")
           
           $process = Start-Process -FilePath $installerPath -ArgumentList $installArgs -Wait -PassThru -NoNewWindow
@@ -186,7 +251,6 @@ jobs:
           Write-Host "Installation process exited with code: $($process.ExitCode)"
           Start-Sleep -Seconds 15
           
-          # Check common installation paths
           $possiblePaths = @(
               "C:\Program Files\MuMuPlayer-12.0",
               "C:\Program Files (x86)\MuMuPlayer-12.0",
@@ -214,7 +278,6 @@ jobs:
               echo "MUMU_INSTALLED=unknown" >> $env:GITHUB_ENV
           }
           
-          # Clean up installer
           Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
 
       - name: Install Tailscale
@@ -236,7 +299,6 @@ jobs:
           Write-Host "Connecting to Tailscale..."
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-vnc-$env:GITHUB_RUN_ID
           
-          # Wait for Tailscale to assign an IP
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 15) {
@@ -253,19 +315,27 @@ jobs:
           }
           
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-          Write-Host "Tailscale IP assigned: $tsIP"
+          Write-Host "✓ Tailscale IP assigned: $tsIP"
 
-      - name: Verify VNC Accessibility
+      - name: Verify Connectivity
         run: |
-          Write-Host "Testing VNC connectivity..."
+          Write-Host "`nTesting connectivity..."
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
           
           # Test VNC port
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 5900
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Warning "VNC port 5900 test failed, but this may work from Tailscale network"
+          $vncTest = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 5900 -WarningAction SilentlyContinue
+          if ($vncTest.TcpTestSucceeded) {
+              Write-Host "✓ VNC port 5900 is accessible"
           } else {
-              Write-Host "VNC port 5900 is accessible!"
+              Write-Warning "⚠ VNC port test failed (may work from Tailscale network)"
+          }
+          
+          # Test WebSocket port
+          $wsTest = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 6080 -WarningAction SilentlyContinue
+          if ($wsTest.TcpTestSucceeded) {
+              Write-Host "✓ WebSocket port 6080 is accessible"
+          } else {
+              Write-Warning "⚠ WebSocket port test failed (may work from Tailscale network)"
           }
 
       - name: Display Connection Information
@@ -274,30 +344,38 @@ jobs:
                        elseif ($env:MUMU_INSTALLED -eq "false") { "⚠ Install Manually" }
                        else { "? Check After Connect" }
           
-          Write-Host "`n╔════════════════════════════════════════════════╗"
-          Write-Host "║         VNC CONNECTION INFORMATION             ║"
-          Write-Host "╠════════════════════════════════════════════════╣"
-          Write-Host "║ VNC Address: $env:TAILSCALE_IP:5900            "
-          Write-Host "║ Password: $env:VNC_PASSWORD                    "
-          Write-Host "║                                                 "
-          Write-Host "║ MuMu Player: $mumuStatus                       "
-          Write-Host "║ Touchscreen: Enabled via VNC                   ║"
-          Write-Host "╚════════════════════════════════════════════════╝`n"
-          
-          Write-Host "VNC Client Instructions:"
-          Write-Host "1. Connect to Tailscale network"
-          Write-Host "2. Use VNC client (TightVNC Viewer, RealVNC, etc.)"
-          Write-Host "3. Connect to: $env:TAILSCALE_IP:5900"
-          Write-Host "4. Enter password when prompted"
+          Write-Host "`n╔════════════════════════════════════════════════════════╗"
+          Write-Host "║         VNC WEB CLIENT CONNECTION INFO                ║"
+          Write-Host "╠════════════════════════════════════════════════════════╣"
+          Write-Host "║                                                        ║"
+          Write-Host "║  🌐 WEB BROWSER ACCESS (Recommended):                 ║"
+          Write-Host "║  ----------------------------------------               ║"
+          Write-Host "║  1. Make sure Tailscale is running on your device     ║"
+          Write-Host "║  2. Open the HTML page you downloaded                 ║"
+          Write-Host "║  3. Enter these details:                              ║"
+          Write-Host "║                                                        ║"
+          Write-Host "║     IP Address: $env:TAILSCALE_IP                    "
+          Write-Host "║     Port: 6080                                        ║"
+          Write-Host "║     Password: $env:VNC_PASSWORD                      "
+          Write-Host "║                                                        ║"
+          Write-Host "║  🖥️ DESKTOP VNC CLIENT (Alternative):                 ║"
+          Write-Host "║  ----------------------------------------               ║"
+          Write-Host "║  Connect to: $env:TAILSCALE_IP:5900                  "
+          Write-Host "║  Password: $env:VNC_PASSWORD                         "
+          Write-Host "║                                                        ║"
+          Write-Host "║  📱 MuMu Player Status: $mumuStatus                  "
+          Write-Host "║                                                        ║"
+          Write-Host "╚════════════════════════════════════════════════════════╝`n"
           
           if ($env:MUMU_INSTALLED -eq "false") {
-              Write-Host "`n⚠ Manual Installation Required:"
+              Write-Host "⚠ Manual MuMu Installation Required:"
               Write-Host "  - Browse to https://mumu.163.com/ in VNC session"
-              Write-Host "  - Download and install MuMu Player"
-          } else {
-              Write-Host "5. MuMu Player should be on desktop/start menu"
+              Write-Host "  - Download and install MuMu Player`n"
           }
-          Write-Host ""
+          
+          Write-Host "🔗 Quick Access URLs:"
+          Write-Host "  Web VNC: Use your local HTML file with IP above"
+          Write-Host "  Desktop VNC: vnc://$env:TAILSCALE_IP:5900`n"
 
       - name: Maintain Connection
         run: |
@@ -308,14 +386,22 @@ jobs:
           while ($true) {
               $counter++
               $runtime = [math]::Round($counter * 5 / 60, 1)
-              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] VNC Active | Runtime: $runtime min | IP: $env:TAILSCALE_IP"
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] VNC Active | Runtime: $runtime min | Web: $env:TAILSCALE_IP:6080"
               
-              # Periodic service check
+              # Periodic service checks
               if ($counter % 12 -eq 0) {
                   $vncService = Get-Service -Name "tvnserver" -ErrorAction SilentlyContinue
                   if ($vncService.Status -ne "Running") {
-                      Write-Warning "VNC service not running, attempting restart..."
+                      Write-Warning "VNC service stopped, restarting..."
                       Start-Service -Name "tvnserver"
+                  }
+                  
+                  $wsProcess = Get-Process python -ErrorAction SilentlyContinue | Where-Object {
+                      $_.CommandLine -like "*websockify*"
+                  }
+                  if (-not $wsProcess) {
+                      Write-Warning "Websockify stopped, restarting..."
+                      Start-Process powershell -ArgumentList "-NoExit", "-Command", "python -m websockify --web=. 0.0.0.0:6080 localhost:5900" -WindowStyle Hidden
                   }
               }
               
