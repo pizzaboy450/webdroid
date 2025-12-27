@@ -1,39 +1,35 @@
 name: RDP
 on:
   workflow_dispatch:
-    inputs:
-      auth_code:
-        description: 'Chrome Remote Desktop Auth Code'
-        required: true
 
 jobs:
   windows-browser:
     runs-on: windows-latest
     steps:
-      - name: Setup Windows
+      - name: Setup VNC & noVNC
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
-          netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
-          net user runneradmin CloudPass2025!
+          # Install VNC Server
+          choco install tightvnc -y
+          & "C:\Program Files\TightVNC\tvnserver.exe" -install
+          & "C:\Program Files\TightVNC\tvnserver.exe" -controlapp -setpassword "cloud123"
+          net start "TightVNC Server"
+          
+          # Install noVNC and the Localtunnel client
+          npm install -g novnc localtunnel
 
-      - name: Install & Launch Chrome Remote Desktop
+      - name: Start Web Bridge & Tunnel
         shell: pwsh
         run: |
-          # 1. Download the installer
-          $url = "https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi"
-          Invoke-WebRequest -Uri $url -OutFile "crd.msi"
+          # 1. Start the noVNC bridge (VNC -> HTTP)
+          Start-Process powershell -ArgumentList "-NoProfile -Command & {novnc --vnc localhost:5900 --listen 8080}"
           
-          # 2. Install silently
-          Start-Process msiexec.exe -ArgumentList "/i", "crd.msi", "/quiet", "/norestart" -Wait
+          # 2. Wait for the bridge to be ready
+          Start-Sleep -Seconds 5
           
-          # 3. Start the service with your Auth Code
-          # This connects the runner directly to your Google Account browser
-          & "C:\Program Files\Chrome Remote Desktop\dist\remoting_start_host.exe" `
-            --code="${{ github.event.inputs.auth_code }}" `
-            --redirect-url="https://remotedesktop.google.com/_/oauthredirect" `
-            --name-prefix="GH-Runner"
+          # 3. Launch Localtunnel to expose the web interface
+          # This will output your public URL directly to the logs
+          lt --port 8080
 
-      - name: Keep Online
+      - name: Keep Alive
         run: |
           while($true) { Start-Sleep -Seconds 300 }
