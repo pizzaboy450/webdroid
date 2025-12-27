@@ -1,4 +1,4 @@
-name: Browser Windows (No Ngrok)
+name: Ultimate Browser Windows
 on:
   workflow_dispatch:
 
@@ -6,35 +6,37 @@ jobs:
   windows-direct:
     runs-on: windows-latest
     steps:
-      - name: Setup Windows Environment
+      - name: Kill Conflicting Services
         run: |
-          # Optimize for touch/tablet feel
-          reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ImmersiveShell" /v "TabletMode" /t REG_DWORD /d 1 /f
-          # Set a standard password for the runneradmin user
-          net user runneradmin CloudPass2025!
+          Stop-Service -Name "tvnserver" -ErrorAction SilentlyContinue
+          Stop-Process -Name "rustdesk" -ErrorAction SilentlyContinue
 
-      - name: Install Cloudflared & RustDesk
+      - name: Install & Configure VNC
+        run: |
+          choco install tightvnc cloudflared -y
+          $vncPass = "cloud123"
+          & "C:\Program Files\TightVNC\tvnserver.exe" -install
+          & "C:\Program Files\TightVNC\tvnserver.exe" -controlapp -setpassword $vncPass
+          net start "TightVNC Server"
+
+      - name: Start Web-to-VNC Bridge
         shell: pwsh
         run: |
-          choco install cloudflared -y
-          # Download RustDesk (The 'engine' that handles the video stream)
-          Invoke-WebRequest -Uri "https://github.com/rustdesk/rustdesk/releases/download/1.2.3-2/rustdesk-1.2.3-2-x86_64.exe" -OutFile "rustdesk.exe"
-          
-          # Start RustDesk in the background
-          Start-Process ./rustdesk.exe --silent-install
-          Start-Sleep -Seconds 15
+          # Download a portable Node.js bridge to turn VNC into a Website
+          npm install -g novnc
+          # Start the bridge on port 8080 (VNC 5900 -> Web 8080)
+          Start-Process powershell -ArgumentList "-NoProfile -Command & {novnc --vnc localhost:5900 --listen 8080}"
+          Start-Sleep -Seconds 10
 
-      - name: Launch Web Gateway
+      - name: Launch Cloudflare Tunnel
         shell: pwsh
         run: |
-          # Use Cloudflare to create a DIRECT HTTP link to the RustDesk web server
-          # RustDesk's local web server runs on 21118 or 8000 depending on version
-          # We will tunnel the standard RDP-to-Web port
-          Start-Process powershell -ArgumentList "-NoProfile -Command & {cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1}"
+          # Tunnel the WEB port (8080)
+          Start-Process powershell -ArgumentList "-NoProfile -Command & {cloudflared tunnel --url http://localhost:8080 > cf.log 2>&1}"
           Write-Host "Generating your browser link..."
           Start-Sleep -Seconds 20
 
-      - name: Final Browser Link
+      - name: Get Your Direct Link
         shell: pwsh
         run: |
           $log = Get-Content cf.log
@@ -43,17 +45,17 @@ jobs:
           if ($line) {
               $URL = $line.Matches.Value
               Write-Host "`n"
-              Write-Host "========================================================"
-              Write-Host "✅ WINDOWS IS READY (NO NGROK)"
-              Write-Host "========================================================"
-              Write-Host "1. OPEN THIS URL: $URL"
-              Write-Host "2. If prompted for a password: CloudPass2025!"
-              Write-Host "========================================================"
+              Write-Host "********************************************************"
+              Write-Host "✅ WINDOWS BROWSER READY"
+              Write-Host "********************************************************"
+              Write-Host "LINK: $URL/vnc.html"
+              Write-Host "PASSWORD: cloud123"
+              Write-Host "********************************************************"
           } else {
               Get-Content cf.log
-              Write-Error "Failed to generate link."
+              Write-Error "Link generation failed."
           }
 
-      - name: Stay Alive
+      - name: Keep Online
         run: |
           while($true) { Start-Sleep -Seconds 300 }
