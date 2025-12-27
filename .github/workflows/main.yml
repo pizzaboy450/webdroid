@@ -1,45 +1,23 @@
-name: RDP
+name: Iframe RDP
 on:
   workflow_dispatch:
 
 jobs:
-  rdp-task:
+  run-rdp:
     runs-on: windows-latest
     steps:
-      - name: Setup Windows
+      - name: Start noVNC
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
-          netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
-          net user runneradmin CloudPass2025!
+          choco install tightvnc cloudflared -y
+          # Setup VNC Password
+          & "C:\Program Files\TightVNC\tvnserver.exe" -controlapp -setpassword "cloud123"
+          net start "TightVNC Server"
+          # Start the Web-to-VNC translator
+          npm install -g novnc
+          Start-Process powershell -ArgumentList "-NoProfile -Command & {novnc --vnc localhost:5900 --listen 8080}"
 
-      - name: Launch Tunnel
+      - name: Create Iframe Tunnel
         shell: pwsh
         run: |
-          # 1. Install Cloudflared
-          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.msi" -OutFile "cf.msi"
-          Start-Process msiexec.exe -ArgumentList "/i", "cf.msi", "/quiet" -Wait
-          
-          # 2. Start Tunnel and pipe directly to the console so you can SEE the link
-          Write-Host "--- WAITING FOR LINK (Watch below) ---"
-          Start-Process powershell -ArgumentList "-NoProfile -Command & {cloudflared tunnel --url tcp://localhost:3389}"
-          
-          # 3. This small loop will grab the link and print it BIG
-          $found = $false
-          while (-not $found) {
-              $log = Get-Content -Path "$env:USERPROFILE\.cloudflared\*.log" -ErrorAction SilentlyContinue | Select-String "trycloudflare.com"
-              if ($log) {
-                  $url = ($log | Select-Object -First 1).ToString().Split(" ")[-1]
-                  Write-Host "`n`n=========================================="
-                  Write-Host "✅ YOUR LINK IS: $url"
-                  Write-Host "USER: runneradmin"
-                  Write-Host "PASS: CloudPass2025!"
-                  Write-Host "==========================================`n`n"
-                  $found = $true
-              }
-              Start-Sleep -Seconds 2
-          }
-
-      - name: Keep Alive
-        run: |
-          while($true) { Start-Sleep -Seconds 300 }
+          # This gives the noVNC server a public URL that an Iframe can see
+          cloudflared tunnel --url http://localhost:8080
