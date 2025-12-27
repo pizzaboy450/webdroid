@@ -8,26 +8,27 @@ jobs:
     steps:
       - name: Setup VNC & noVNC
         run: |
-          # Install VNC Server
           choco install tightvnc -y
           & "C:\Program Files\TightVNC\tvnserver.exe" -install
           & "C:\Program Files\TightVNC\tvnserver.exe" -controlapp -setpassword "cloud123"
           net start "TightVNC Server"
-          
-          # Install noVNC and the Localtunnel client
           npm install -g novnc localtunnel
 
       - name: Start Web Bridge & Tunnel
         shell: pwsh
         run: |
-          # 1. Start the noVNC bridge (VNC -> HTTP)
+          # 1. Get the Public IP (This is your bypass password)
+          $ip = Invoke-RestMethod http://ipinfo.io/ip
+          
+          Write-Host "`n=========================================="
+          Write-Host "✅ BYPASS PASSWORD (IP): $ip"
+          Write-Host "==========================================`n"
+
+          # 2. Start noVNC bridge
           Start-Process powershell -ArgumentList "-NoProfile -Command & {novnc --vnc localhost:5900 --listen 8080}"
           
-          # 2. Wait for the bridge to be ready
-          Start-Sleep -Seconds 5
-          
-          # 3. Launch Localtunnel to expose the web interface
-          # This will output your public URL directly to the logs
+          # 3. Launch Localtunnel
+          # Once you click the link, paste the IP above into the 'Tunnel Password' box
           lt --port 8080
 
       - name: Keep Alive
