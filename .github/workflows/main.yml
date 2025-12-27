@@ -17,10 +17,10 @@ jobs:
       - name: Start Web Bridge & Tunnel
         shell: pwsh
         run: |
-          # 1. Start the noVNC bridge
+          # 1. Start noVNC bridge
           Start-Process powershell -ArgumentList "-NoProfile -Command & {novnc --vnc localhost:5900 --listen 8080}"
           
-          # 2. Launch Pinggy and capture the URL
+          # 2. Start Serveo Tunnel
+          # Serveo is excellent because it doesn't require a public key by default
           Write-Host "--- GENERATING YOUR LINK ---"
-          # We use 'T' to force a pseudo-terminal and 'y' to skip the manual prompt
-          ssh -p 443 -o StrictHostKeyChecking=no -o BatchMode=yes -R0:localhost:8080 a.pinggy.io "proxy_builtin"
+          ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=60 -R 80:localhost:8080 serveo.net
