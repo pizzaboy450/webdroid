@@ -9,14 +9,12 @@ on:
 jobs:
   windows-web:
     runs-on: windows-latest
-    timeout-minutes: 3600
     steps:
       - name: Configure Windows RDP
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
-          # Enable Tablet Mode for better touch
           reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ImmersiveShell" /v "TabletMode" /t REG_DWORD /d 1 /f
 
       - name: Create RDP User
@@ -27,27 +25,38 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "CloudUser"
           echo "PASSWORD=$password" >> $env:GITHUB_ENV
 
-      - name: Start Ngrok Tunnel
+      - name: Start Ngrok (Log Method)
         shell: pwsh
         run: |
           choco install ngrok -y
           ngrok config add-authtoken ${{ github.event.inputs.ngrok_token }}
-          # Tunnel the RDP port
-          Start-Process ngrok -ArgumentList "tcp 3389"
-          Start-Sleep -Seconds 10
+          
+          # Start ngrok and redirect ALL output to a file
+          Start-Process powershell -ArgumentList "-NoProfile -Command & {ngrok tcp 3389 > ngrok.log}"
+          
+          Write-Host "Waiting for Ngrok to generate address..."
+          Start-Sleep -Seconds 20
 
-      - name: Get Public Link
+      - name: Extract URL and Show Details
         shell: pwsh
         run: |
-          $JSON = Invoke-RestMethod http://localhost:4040/api/tunnels
-          $PublicURL = $JSON.tunnels[0].public_url -replace 'tcp://', ''
+          # Read the log file and find the tcp:// address
+          $log = Get-Content ngrok.log -ErrorAction SilentlyContinue
+          $line = $log | Select-String -Pattern "tcp://[0-9a-z\.]*:[0-9]*"
           
-          Write-Host "`n=========================================="
-          Write-Host "✅ WINDOWS IS ONLINE"
-          Write-Host "ADDRESS: $PublicURL"
-          Write-Host "USER: CloudUser"
-          Write-Host "PASS: ${{ env.PASSWORD }}"
-          Write-Host "==========================================`n"
-          
-          # Maintain connection
-          while($true) { Start-Sleep -Seconds 300 }
+          if ($line) {
+              $PublicURL = ($line.Matches.Value) -replace 'tcp://', ''
+              Write-Host "`n=========================================="
+              Write-Host "✅ WINDOWS IS ONLINE"
+              Write-Host "ADDRESS: $PublicURL"
+              Write-Host "USER: CloudUser"
+              Write-Host "PASS: ${{ env.PASSWORD }}"
+              Write-Host "==========================================`n"
+              
+              # Keep alive
+              while($true) { Start-Sleep -Seconds 300 }
+          } else {
+              Write-Error "Could not find URL in ngrok.log. Check your token!"
+              Get-Content ngrok.log
+              exit 1
+          }
