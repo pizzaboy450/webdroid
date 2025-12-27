@@ -1,47 +1,42 @@
-name: Ultimate Browser Windows (Tmate)
+name: RDP
 on:
   workflow_dispatch:
 
 jobs:
-  windows-direct:
+  rdp-task:
     runs-on: windows-latest
     steps:
-      - name: Setup Windows RDP
+      - name: Setup
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
-          # Set a password for the default runner user
           net user runneradmin CloudPass2025!
 
-      - name: Start Tmate (Web Gateway)
-        shell: cmd
-        run: |
-          # Download portable Tmate
-          curl -L https://github.com/tmate-io/tmate/releases/download/2.4.0/tmate-2.4.0-static-linux-amd64.tar.xz -o tmate.tar.xz
-          # Note: We use the Git-Bash tools already on the runner to extract and run
-          tar -xf tmate.tar.xz
-          
-          # Start Tmate and save the web URL to a file
-          # We use a unique session name to avoid conflicts
-          start /b tmate -S /tmp/tmate.sock new-session -d
-          timeout 5
-          tmate -S /tmp/tmate.sock wait-for-connection
-          tmate -S /tmp/tmate.sock display -p "#{tmate_web}" > link.txt
-
-      - name: Display Link
+      - name: Tunnel
         shell: pwsh
         run: |
-          $url = Get-Content link.txt
-          Write-Host "`n********************************************************"
-          Write-Host "✅ WINDOWS TERMINAL / BROWSER READY"
-          Write-Host "********************************************************"
-          Write-Host "CLICK THIS: $url"
-          Write-Host "********************************************************"
-          Write-Host "To see the Desktop, use a Web-RDP portal like MyRDP.net"
-          Write-Host "with the IP: 127.0.0.1 (Tmate tunnels it automatically)"
-          Write-Host "********************************************************"
-
-      - name: Keep Online
-        run: |
+          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.msi" -OutFile "cf.msi"
+          Start-Process msiexec.exe -ArgumentList "/i", "cf.msi", "/quiet" -Wait
+          Start-Process powershell -ArgumentList "-NoProfile -Command & {cloudflared tunnel --url tcp://localhost:3389 > log.txt 2>&1}"
+          
+          $url = $null
+          while($null -eq $url) {
+            Start-Sleep -Seconds 5
+            if (Test-Path log.txt) {
+              $content = Get-Content log.txt
+              $match = $content | Select-String -Pattern "https://[a-z0-9-.]*trycloudflare.com"
+              if ($match) {
+                $url = $match.Matches.Value
+                Write-Host "URL_FOUND=$url"
+              }
+            }
+          }
+          
+          Write-Host "=========================================="
+          Write-Host "URL: $url"
+          Write-Host "USER: runneradmin"
+          Write-Host "PASS: CloudPass2025!"
+          Write-Host "=========================================="
+          
           while($true) { Start-Sleep -Seconds 300 }
