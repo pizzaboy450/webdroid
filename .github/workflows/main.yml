@@ -36,38 +36,45 @@ jobs:
       - name: Start Ngrok Tunnel
         shell: pwsh
         run: |
-          ngrok config add-authtoken ${{ github.event.inputs.ngrok_token }}
-          # Run ngrok as a background task
-          Start-Process ngrok -ArgumentList "tcp 3389"
+          # Kill any old ngrok instances just in case
+          Stop-Process -Name "ngrok" -ErrorAction SilentlyContinue
+          
+          # Auth and Start
+          & ngrok config add-authtoken ${{ github.event.inputs.ngrok_token }}
+          
+          # Launching with --log=stdout helps keep the process 'real' in the background
+          Start-Process -FilePath "ngrok.exe" -ArgumentList "tcp 3389 --log=stdout" -WindowStyle Hidden
+          
+          Write-Host "Ngrok process started. Waiting for API..."
+          Start-Sleep -Seconds 15
 
-      - name: Get Connection Details (With Retry)
+      - name: Get Connection Details
         shell: pwsh
         run: |
           $attempts = 0
-          $maxAttempts = 10
+          $maxAttempts = 15 # Increased retries
           $JSON = $null
-          
-          Write-Host "Waiting for Ngrok API to wake up..."
           
           while($null -eq $JSON -and $attempts -lt $maxAttempts) {
               try {
+                  # We check the local API that ngrok runs
                   $JSON = Invoke-RestMethod http://localhost:4040/api/tunnels
               } catch {
                   $attempts++
-                  Write-Host "Attempt $attempts failed. Retrying in 5 seconds..."
+                  Write-Host "Ngrok API not ready (Attempt $attempts)..."
                   Start-Sleep -Seconds 5
               }
           }
 
-          if ($null -ne $JSON) {
-              $PublicURL = $JSON.tunnels.public_url -replace 'tcp://', ''
+          if ($JSON -and $JSON.tunnels) {
+              $PublicURL = $JSON.tunnels[0].public_url -replace 'tcp://', ''
               Write-Host "`n=========================================="
-              Write-Host "CONNECT TO: $PublicURL"
-              Write-Host "USERNAME: RDPUser"
-              Write-Host "PASSWORD: ${{ env.PASSWORD }}"
+              Write-Host "✅ CONNECT TO: $PublicURL"
+              Write-Host "👤 USERNAME: RDPUser"
+              Write-Host "🔑 PASSWORD: ${{ env.PASSWORD }}"
               Write-Host "==========================================`n"
           } else {
-              Write-Error "Ngrok failed to start in time."
+              Write-Error "Ngrok failed to provide a public URL. Check if your token is valid!"
               exit 1
           }
 
