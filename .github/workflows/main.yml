@@ -14,23 +14,20 @@ jobs:
     steps:
       - name: Configure RDP & Touch Optimization
         run: |
-          # Enable RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
-          
-          # Allow RDP through Firewall
           netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
-          
-          # Force Tablet Mode / Touch optimization
           reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ImmersiveShell" /v "TabletMode" /t REG_DWORD /d 1 /f
 
       - name: Create RDP User
         run: |
           $password = "CloudRDP2025!"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDPUser" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDPUser"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDPUser"
+          if (-not (Get-LocalUser -Name "RDPUser" -ErrorAction SilentlyContinue)) {
+              New-LocalUser -Name "RDPUser" -Password $securePass -AccountNeverExpires
+              Add-LocalGroupMember -Group "Administrators" -Member "RDPUser"
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDPUser"
+          }
           echo "PASSWORD=$password" >> $env:GITHUB_ENV
 
       - name: Install Ngrok
@@ -40,27 +37,43 @@ jobs:
         shell: pwsh
         run: |
           ngrok config add-authtoken ${{ github.event.inputs.ngrok_token }}
-          # Start TCP tunnel on RDP port 3389
+          # Run ngrok as a background task
           Start-Process ngrok -ArgumentList "tcp 3389"
-          
-          Write-Host "Waiting for tunnel to initialize..."
-          Start-Sleep -Seconds 10
 
-      - name: Get Connection Details
+      - name: Get Connection Details (With Retry)
         shell: pwsh
         run: |
-          # Query Ngrok API to find the public URL
-          $JSON = Invoke-RestMethod http://localhost:4040/api/tunnels
-          $PublicURL = $JSON.tunnels.public_url -replace 'tcp://', ''
+          $attempts = 0
+          $maxAttempts = 10
+          $JSON = $null
           
-          Write-Host "`n=========================================="
-          Write-Host "CONNECT TO: $PublicURL"
-          Write-Host "USERNAME: RDPUser"
-          Write-Host "PASSWORD: ${{ env.PASSWORD }}"
-          Write-Host "==========================================`n"
+          Write-Host "Waiting for Ngrok API to wake up..."
+          
+          while($null -eq $JSON -and $attempts -lt $maxAttempts) {
+              try {
+                  $JSON = Invoke-RestMethod http://localhost:4040/api/tunnels
+              } catch {
+                  $attempts++
+                  Write-Host "Attempt $attempts failed. Retrying in 5 seconds..."
+                  Start-Sleep -Seconds 5
+              }
+          }
+
+          if ($null -ne $JSON) {
+              $PublicURL = $JSON.tunnels.public_url -replace 'tcp://', ''
+              Write-Host "`n=========================================="
+              Write-Host "CONNECT TO: $PublicURL"
+              Write-Host "USERNAME: RDPUser"
+              Write-Host "PASSWORD: ${{ env.PASSWORD }}"
+              Write-Host "==========================================`n"
+          } else {
+              Write-Error "Ngrok failed to start in time."
+              exit 1
+          }
 
       - name: Maintain Connection
         run: |
           while ($true) {
+              Write-Host "[$(Get-Date)] Connection Active..."
               Start-Sleep -Seconds 300
           }
