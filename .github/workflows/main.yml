@@ -105,53 +105,113 @@ jobs:
 
       - name: Download MuMu Player
         run: |
-          $mumuUrl = "https://t.mumu.163.com/YqrAOxl"  # Official MuMu Player 12 download
-          $installerPath = "$env:TEMP\MuMuPlayer-12.0.exe"
+          # MuMu Player official download page redirects, so we'll use direct CDN link
+          $installerPath = "$env:TEMP\MuMuInstaller.exe"
           
           Write-Host "Downloading MuMu Player..."
-          try {
-              # Try direct download
-              Invoke-WebRequest -Uri $mumuUrl -OutFile $installerPath -UserAgent "Mozilla/5.0"
-          } catch {
-              Write-Host "Direct download failed, trying alternative source..."
-              # Alternative: use a more reliable CDN link
-              $altUrl = "https://mumu.163.com/update/win11/MuMuPlayer-12.0.exe"
-              Invoke-WebRequest -Uri $altUrl -OutFile $installerPath -UserAgent "Mozilla/5.0"
+          
+          # Try multiple sources
+          $sources = @(
+              "https://mumu.cae5df2a.c3p0.dianlianyule.com/MuMuPlayer-12.0.exe",
+              "https://dl-sh-mumu-static.mumu.163.com/installer/MuMuPlayer-12.0.exe",
+              "https://mumu.163.com/baidu/MuMuInstaller.exe"
+          )
+          
+          $downloaded = $false
+          foreach ($url in $sources) {
+              try {
+                  Write-Host "Trying: $url"
+                  Invoke-WebRequest -Uri $url -OutFile $installerPath -UserAgent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -TimeoutSec 60
+                  if ((Test-Path $installerPath) -and ((Get-Item $installerPath).Length -gt 1MB)) {
+                      $fileSize = (Get-Item $installerPath).Length / 1MB
+                      Write-Host "Successfully downloaded MuMu Player: $([math]::Round($fileSize, 2)) MB"
+                      $downloaded = $true
+                      break
+                  }
+              } catch {
+                  Write-Host "Failed: $_"
+                  if (Test-Path $installerPath) { Remove-Item $installerPath -Force }
+              }
           }
           
-          if (Test-Path $installerPath) {
-              $fileSize = (Get-Item $installerPath).Length / 1MB
-              Write-Host "Downloaded MuMu Player: $([math]::Round($fileSize, 2)) MB"
+          if (-not $downloaded) {
+              Write-Host "All download sources failed. Attempting to download via official website..."
+              # Use Invoke-WebRequest to follow redirects from official page
+              try {
+                  $response = Invoke-WebRequest -Uri "https://mumu.163.com/" -UserAgent "Mozilla/5.0" -MaximumRedirection 5
+                  $downloadLink = ($response.Links | Where-Object { $_.href -like "*.exe" -or $_.href -like "*download*" } | Select-Object -First 1).href
+                  if ($downloadLink) {
+                      Write-Host "Found download link: $downloadLink"
+                      Invoke-WebRequest -Uri $downloadLink -OutFile $installerPath -UserAgent "Mozilla/5.0"
+                      $downloaded = $true
+                  }
+              } catch {
+                  Write-Warning "Could not find download link from official website"
+              }
+          }
+          
+          if ($downloaded -and (Test-Path $installerPath)) {
               echo "MUMU_INSTALLER=$installerPath" >> $env:GITHUB_ENV
           } else {
-              Write-Error "Failed to download MuMu Player"
-              exit 1
+              Write-Warning "Failed to download MuMu Player automatically"
+              Write-Host "You can manually install it after connecting via VNC"
+              Write-Host "Download from: https://mumu.163.com/"
+              echo "MUMU_INSTALLER=" >> $env:GITHUB_ENV
           }
 
       - name: Install MuMu Player
         run: |
           $installerPath = $env:MUMU_INSTALLER
           
-          if (-not (Test-Path $installerPath)) {
-              Write-Error "Installer not found at $installerPath"
-              exit 1
+          if (-not $installerPath -or -not (Test-Path $installerPath)) {
+              Write-Host "═══════════════════════════════════════════════"
+              Write-Host "MuMu Player download was unsuccessful"
+              Write-Host "You can install it manually after VNC connection:"
+              Write-Host "1. Open browser in VNC session"
+              Write-Host "2. Visit: https://mumu.163.com/"
+              Write-Host "3. Download and run installer"
+              Write-Host "═══════════════════════════════════════════════"
+              echo "MUMU_INSTALLED=false" >> $env:GITHUB_ENV
+              return
           }
           
-          Write-Host "Installing MuMu Player (this may take several minutes)..."
+          Write-Host "Installing MuMu Player (this may take 5-10 minutes)..."
           
           # Silent install parameters for MuMu Player
-          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait -NoNewWindow
+          # /S for silent, /D for directory (optional)
+          $installArgs = @("/S")
           
-          Start-Sleep -Seconds 10
+          $process = Start-Process -FilePath $installerPath -ArgumentList $installArgs -Wait -PassThru -NoNewWindow
           
-          # Verify installation
-          $mumuPath = "C:\Program Files\MuMuPlayer-12.0"
-          $altPath = "$env:LOCALAPPDATA\MuMuPlayer-12.0"
+          Write-Host "Installation process exited with code: $($process.ExitCode)"
+          Start-Sleep -Seconds 15
           
-          if ((Test-Path $mumuPath) -or (Test-Path $altPath)) {
-              Write-Host "MuMu Player installed successfully"
+          # Check common installation paths
+          $possiblePaths = @(
+              "C:\Program Files\MuMuPlayer-12.0",
+              "C:\Program Files (x86)\MuMuPlayer-12.0",
+              "$env:LOCALAPPDATA\MuMuPlayer-12.0",
+              "$env:ProgramFiles\Netease\MuMuPlayer-12.0",
+              "C:\Program Files\Netease\MuMu Player 12"
+          )
+          
+          $installed = $false
+          foreach ($path in $possiblePaths) {
+              if (Test-Path $path) {
+                  Write-Host "✓ MuMu Player found at: $path"
+                  $installed = $true
+                  break
+              }
+          }
+          
+          if ($installed) {
+              Write-Host "✓ MuMu Player installed successfully"
+              echo "MUMU_INSTALLED=true" >> $env:GITHUB_ENV
           } else {
-              Write-Warning "MuMu Player installation path not found, but continuing..."
+              Write-Host "⚠ MuMu Player installation path not verified"
+              Write-Host "  Installation may have completed to non-standard location"
+              Write-Host "  Check Desktop or Start Menu after VNC connection"
+              echo "MUMU_INSTALLED=unknown" >> $env:GITHUB_ENV
           }
           
           # Clean up installer
@@ -210,13 +270,17 @@ jobs:
 
       - name: Display Connection Information
         run: |
+          $mumuStatus = if ($env:MUMU_INSTALLED -eq "true") { "✓ Installed" } 
+                       elseif ($env:MUMU_INSTALLED -eq "false") { "⚠ Install Manually" }
+                       else { "? Check After Connect" }
+          
           Write-Host "`n╔════════════════════════════════════════════════╗"
           Write-Host "║         VNC CONNECTION INFORMATION             ║"
           Write-Host "╠════════════════════════════════════════════════╣"
           Write-Host "║ VNC Address: $env:TAILSCALE_IP:5900            "
           Write-Host "║ Password: $env:VNC_PASSWORD                    "
           Write-Host "║                                                 "
-          Write-Host "║ MuMu Player: Installed                         ║"
+          Write-Host "║ MuMu Player: $mumuStatus                       "
           Write-Host "║ Touchscreen: Enabled via VNC                   ║"
           Write-Host "╚════════════════════════════════════════════════╝`n"
           
@@ -225,7 +289,15 @@ jobs:
           Write-Host "2. Use VNC client (TightVNC Viewer, RealVNC, etc.)"
           Write-Host "3. Connect to: $env:TAILSCALE_IP:5900"
           Write-Host "4. Enter password when prompted"
-          Write-Host "5. MuMu Player should be available on desktop/start menu`n"
+          
+          if ($env:MUMU_INSTALLED -eq "false") {
+              Write-Host "`n⚠ Manual Installation Required:"
+              Write-Host "  - Browse to https://mumu.163.com/ in VNC session"
+              Write-Host "  - Download and install MuMu Player"
+          } else {
+              Write-Host "5. MuMu Player should be on desktop/start menu"
+          }
+          Write-Host ""
 
       - name: Maintain Connection
         run: |
