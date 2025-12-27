@@ -1,4 +1,4 @@
-name: Fullscreen Browser Windows
+name: Direct Browser Windows
 on:
   workflow_dispatch:
 
@@ -6,14 +6,11 @@ jobs:
   windows-web:
     runs-on: windows-latest
     steps:
-      - name: Configure Windows Desktop
+      - name: Setup Windows Desktop
         run: |
-          # Enable RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
-          
-          # Enable Tablet Mode for Fullscreen Touch experience
           reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ImmersiveShell" /v "TabletMode" /t REG_DWORD /d 1 /f
 
       - name: Create User
@@ -24,41 +21,44 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "CloudUser"
           echo "PASSWORD=$password" >> $env:GITHUB_ENV
 
-      - name: Install Web Bridge (noVNC)
-        run: |
-          # We use Choco to install the tools that turn RDP into a Website
-          choco install tightvnc cloudflared -y
-
-      - name: Start Web Service
+      - name: Install & Start Web Bridge
         shell: pwsh
         run: |
-          # 1. Start VNC (this acts as our web-friendly video stream)
-          $vncPass = "cloud123"
-          & "C:\Program Files\TightVNC\tvnserver.exe" -install
-          & "C:\Program Files\TightVNC\tvnserver.exe" -controlapp -setpassword $vncPass
-          net start "TightVNC Server"
+          # Use Choco to get the Cloudflared binary without service conflicts
+          choco install cloudflared -y
           
-          # 2. Start Cloudflare Tunnel on the Web Port (VNC uses 5900, but we tunnel it for Web)
-          # Cloudflare's --url flag automatically handles the protocol conversion
-          Start-Process powershell -ArgumentList "-NoProfile -Command & {cloudflared tunnel --url tcp://localhost:5900 > cf.log 2>&1}"
+          # Start the tunnel for RDP port 3389
+          # We redirect output to a file so we can grab the URL
+          Start-Process powershell -ArgumentList "-NoProfile -Command & {cloudflared tunnel --url tcp://localhost:3389 > tunnel.log 2>&1}"
           
-          Write-Host "Generating your browser link..."
+          Write-Host "Waking up the cloud..."
           Start-Sleep -Seconds 20
 
-      - name: Final Browser Link
+      - name: Show Browser Link
         shell: pwsh
         run: |
-          $log = Get-Content cf.log
-          $line = $log | Select-String -Pattern "https://[a-z0-9-.]*trycloudflare.com"
+          $content = Get-Content tunnel.log
+          $urlLine = $content | Select-String -Pattern "https://[a-z0-9-.]*trycloudflare.com"
           
-          if ($line) {
-              $RawURL = $line.Matches.Value
-              Write-Host "`n=========================================="
-              Write-Host "✅ WINDOWS IS READY IN YOUR BROWSER"
-              Write-Host "STEP 1: Open this link: $RawURL"
-              Write-Host "STEP 2: Use a Web VNC viewer (like novnc.com) or enter password below"
-              Write-Host "PASSWORD: cloud123"
-              Write-Host "==========================================`n"
+          if ($urlLine) {
+              $cleanURL = $urlLine.Matches.Value
+              Write-Host "`n"
+              Write-Host "********************************************************"
+              Write-Host "✅ WINDOWS IS ONLINE!"
+              Write-Host "********************************************************"
+              Write-Host "COPY THIS LINK -> $cleanURL"
+              Write-Host "********************************************************"
+              Write-Host "1. Go to https://remotedesktop.google.com/headless"
+              Write-Host "   OR use any Web-RDP client (e.g. MyRDP.net)"
+              Write-Host "2. Address: $cleanURL (remove the https:// part)"
+              Write-Host "3. User: CloudUser | Pass: CloudPass2025!"
+              Write-Host "********************************************************"
+          } else {
+              Write-Host "Full Log Output for Debugging:"
+              Get-Content tunnel.log
+              Write-Error "Tunnel failed to start."
           }
-          
+
+      - name: Stay Alive
+        run: |
           while($true) { Start-Sleep -Seconds 300 }
