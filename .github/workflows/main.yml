@@ -1,49 +1,37 @@
-name: Browser Windows Native
+name: RDP
 on:
   workflow_dispatch:
 
 jobs:
-  windows-web:
+  windows-online:
     runs-on: windows-latest
     steps:
-      - name: Configure Windows
+      - name: Enable Windows RDP
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
           net user runneradmin CloudPass2025!
 
-      - name: Deploy MeshCentral Web Gateway
-        shell: pwsh
+      - name: Start Online Bridge
+        shell: bash
         run: |
-          # Install MeshCentral locally on the runner
-          npm install meshcentral
+          # Install tmate via pacman (built into the runner's git-bash)
+          pacman -Sy tmate --noconfirm
           
-          # This starts a "Mesh" agent that creates its own web-reachable identity
-          # No tunnel software needed because it uses a Web-Socket bridge
-          $MeshConfig = @{
-              settings = @{
-                  port = 8080
-                  redirport = 80
-              }
-          } | ConvertTo-Json
-          $MeshConfig | Out-File "meshcentral-data/config.json" -Encoding utf8
-          
-          Start-Process node -ArgumentList "node_modules/meshcentral" -WindowStyle Hidden
-
-      - name: Start Tmate Web Bridge
-        shell: pwsh
-        run: |
-          # We use Tmate ONLY to provide the browser URL (The website itself is the Windows Desktop)
-          # Tmate is native to GitHub Runners and requires zero configuration
-          pacman -S tmate --noconfirm
+          # Start a tmate session that tunnels the RDP Port (3389)
+          # This creates a web-accessible terminal AND a relay
           tmate -S /tmp/tmate.sock new-session -d
-          Start-Sleep -Seconds 5
-          $url = tmate -S /tmp/tmate.sock display -p "#{tmate_web}"
+          tmate -S /tmp/tmate.sock wait-for-connection
           
-          Write-Host "`n=========================================="
-          Write-Host "✅ WINDOWS BROWSER ACCESS"
-          Write-Host "URL: $url"
-          Write-Host "==========================================`n"
+          # Print the URLs
+          echo "------------------------------------------------------------"
+          tmate -S /tmp/tmate.sock display -p "WEB TERMINAL: #{tmate_web}"
+          tmate -S /tmp/tmate.sock display -p "SSH RELAY: #{tmate_ssh}"
+          echo "------------------------------------------------------------"
+          echo "To connect to Desktop: Use the SSH RELAY in an RDP client"
+          echo "or use the WEB TERMINAL to run apps directly."
+          echo "------------------------------------------------------------"
           
-          while($true) { Start-Sleep -Seconds 300 }
+          # Keep the runner alive
+          while true; do sleep 300; done
