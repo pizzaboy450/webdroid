@@ -12,25 +12,18 @@ jobs:
           & "C:\Program Files\TightVNC\tvnserver.exe" -install
           & "C:\Program Files\TightVNC\tvnserver.exe" -controlapp -setpassword "cloud123"
           net start "TightVNC Server"
-          npm install -g novnc localtunnel
+          npm install -g novnc
 
       - name: Start Web Bridge & Tunnel
         shell: pwsh
         run: |
-          # 1. Get the Public IP (This is your bypass password)
-          $ip = Invoke-RestMethod http://ipinfo.io/ip
-          
-          Write-Host "`n=========================================="
-          Write-Host "✅ BYPASS PASSWORD (IP): $ip"
-          Write-Host "==========================================`n"
-
-          # 2. Start noVNC bridge
+          # 1. Start the noVNC bridge (VNC -> HTTP)
           Start-Process powershell -ArgumentList "-NoProfile -Command & {novnc --vnc localhost:5900 --listen 8080}"
           
-          # 3. Launch Localtunnel
-          # Once you click the link, paste the IP above into the 'Tunnel Password' box
-          lt --port 8080
-
-      - name: Keep Alive
-        run: |
-          while($true) { Start-Sleep -Seconds 300 }
+          # 2. Wait for the bridge
+          Start-Sleep -Seconds 5
+          
+          # 3. Launch Pinggy Tunnel
+          # This creates a public HTTPS URL for port 8080
+          # We use -o StrictHostKeyChecking=no to prevent the runner from hanging
+          ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:8080 a.pinggy.io
