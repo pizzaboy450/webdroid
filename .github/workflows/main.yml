@@ -1,37 +1,39 @@
 name: RDP
 on:
   workflow_dispatch:
+    inputs:
+      auth_code:
+        description: 'Chrome Remote Desktop Auth Code'
+        required: true
 
 jobs:
-  windows-online:
+  windows-browser:
     runs-on: windows-latest
     steps:
-      - name: Enable Windows RDP
+      - name: Setup Windows
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
           net user runneradmin CloudPass2025!
 
-      - name: Start Online Bridge
-        shell: bash
+      - name: Install & Launch Chrome Remote Desktop
+        shell: pwsh
         run: |
-          # Install tmate via pacman (built into the runner's git-bash)
-          pacman -Sy tmate --noconfirm
+          # 1. Download the installer
+          $url = "https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi"
+          Invoke-WebRequest -Uri $url -OutFile "crd.msi"
           
-          # Start a tmate session that tunnels the RDP Port (3389)
-          # This creates a web-accessible terminal AND a relay
-          tmate -S /tmp/tmate.sock new-session -d
-          tmate -S /tmp/tmate.sock wait-for-connection
+          # 2. Install silently
+          Start-Process msiexec.exe -ArgumentList "/i", "crd.msi", "/quiet", "/norestart" -Wait
           
-          # Print the URLs
-          echo "------------------------------------------------------------"
-          tmate -S /tmp/tmate.sock display -p "WEB TERMINAL: #{tmate_web}"
-          tmate -S /tmp/tmate.sock display -p "SSH RELAY: #{tmate_ssh}"
-          echo "------------------------------------------------------------"
-          echo "To connect to Desktop: Use the SSH RELAY in an RDP client"
-          echo "or use the WEB TERMINAL to run apps directly."
-          echo "------------------------------------------------------------"
-          
-          # Keep the runner alive
-          while true; do sleep 300; done
+          # 3. Start the service with your Auth Code
+          # This connects the runner directly to your Google Account browser
+          & "C:\Program Files\Chrome Remote Desktop\dist\remoting_start_host.exe" `
+            --code="${{ github.event.inputs.auth_code }}" `
+            --redirect-url="https://remotedesktop.google.com/_/oauthredirect" `
+            --name-prefix="GH-Runner"
+
+      - name: Keep Online
+        run: |
+          while($true) { Start-Sleep -Seconds 300 }
