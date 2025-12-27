@@ -1,30 +1,36 @@
 name: RDP
 on:
   workflow_dispatch:
+    inputs:
+      ngrok_auth:
+        description: 'Ngrok Auth Token'
+        required: true
 
 jobs:
-  rdp-browser:
+  run-rdp:
     runs-on: windows-latest
     steps:
-      - name: Setup VNC & noVNC
+      - name: Setup Web Desktop
         run: |
-          # 1. Install VNC but don't touch the user accounts
-          choco install tightvnc -y
+          choco install tightvnc ngrok -y
           & "C:\Program Files\TightVNC\tvnserver.exe" -install
           & "C:\Program Files\TightVNC\tvnserver.exe" -controlapp -setpassword "cloud123"
           net start "TightVNC Server"
           npm install -g novnc
 
-      - name: Launch Web Desktop
+      - name: Start Bridge and Tunnel
         shell: pwsh
         run: |
-          # 2. Start the bridge
+          # 1. Set Ngrok Token
+          ngrok config add-authtoken "${{ github.event.inputs.ngrok_auth }}"
+          
+          # 2. Start noVNC bridge in background
           Start-Process powershell -ArgumentList "-NoProfile -Command & {novnc --vnc localhost:5900 --listen 8080}"
           
-          # 3. Use the built-in GitHub Tunnel (Code-Server)
-          # This is the most popular way to bypass all 502/503 errors
-          Invoke-WebRequest -Uri "https://code.visualstudio.com/sha/download?build=stable&os=win32-x64-archive" -OutFile "vscode.zip"
-          Expand-Archive vscode.zip -DestinationPath .
+          # 3. Wait for port 8080 to be active (Fixes 502/503 errors)
+          Write-Host "Waiting for Web Desktop..."
+          while (!(Test-NetConnection localhost -Port 8080).TcpTestSucceeded) { Start-Sleep -Seconds 2 }
           
-          Write-Host "--- LOGIN TO GITHUB BELOW ---"
-          ./bin/code.exe tunnel --accept-server-license-terms --name gh-desktop
+          # 4. Start Ngrok
+          Write-Host "✅ Desktop is ready! Launching Tunnel..."
+          ngrok http 8080 --log=stdout
