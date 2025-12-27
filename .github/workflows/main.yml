@@ -17,13 +17,10 @@ jobs:
       - name: Start Web Bridge & Tunnel
         shell: pwsh
         run: |
-          # 1. Start the noVNC bridge (VNC -> HTTP)
+          # 1. Start the noVNC bridge
           Start-Process powershell -ArgumentList "-NoProfile -Command & {novnc --vnc localhost:5900 --listen 8080}"
           
-          # 2. Wait for the bridge
-          Start-Sleep -Seconds 5
-          
-          # 3. Launch Pinggy Tunnel
-          # This creates a public HTTPS URL for port 8080
-          # We use -o StrictHostKeyChecking=no to prevent the runner from hanging
-          ssh -p 443 -o StrictHostKeyChecking=no -R0:localhost:8080 a.pinggy.io
+          # 2. Launch Pinggy and capture the URL
+          Write-Host "--- GENERATING YOUR LINK ---"
+          # We use 'T' to force a pseudo-terminal and 'y' to skip the manual prompt
+          ssh -p 443 -o StrictHostKeyChecking=no -o BatchMode=yes -R0:localhost:8080 a.pinggy.io "proxy_builtin"
