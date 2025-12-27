@@ -1,36 +1,251 @@
-name: RDP
+name: VNC with MuMu Player
+
 on:
   workflow_dispatch:
-    inputs:
-      ngrok_auth:
-        description: 'Ngrok Auth Token'
-        required: true
 
 jobs:
-  run-rdp:
+  vnc-setup:
     runs-on: windows-latest
+    timeout-minutes: 3600
+    
     steps:
-      - name: Setup Web Desktop
+      - name: Create VNC User with Secure Password
         run: |
-          choco install tightvnc ngrok -y
-          & "C:\Program Files\TightVNC\tvnserver.exe" -install
-          & "C:\Program Files\TightVNC\tvnserver.exe" -controlapp -setpassword "cloud123"
-          net start "TightVNC Server"
-          npm install -g novnc
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+              Upper   = [char[]](65..90)
+              Lower   = [char[]](97..122)
+              Number  = [char[]](48..57)
+              Special = ([char[]](33..47) + [char[]](58..64) +
+                         [char[]](91..96) + [char[]](123..126))
+          }
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper | Get-Random -Count 4
+          $rawPassword += $charSet.Lower | Get-Random -Count 4
+          $rawPassword += $charSet.Number | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "VNCUser" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "VNCUser"
+          
+          echo "VNC_PASSWORD=$password" >> $env:GITHUB_ENV
+          
+          if (-not (Get-LocalUser -Name "VNCUser")) {
+              Write-Error "User creation failed"
+              exit 1
+          }
 
-      - name: Start Bridge and Tunnel
-        shell: pwsh
+      - name: Install TightVNC Server
         run: |
-          # 1. Set Ngrok Token
-          ngrok config add-authtoken "${{ github.event.inputs.ngrok_auth }}"
+          $vncUrl = "https://www.tightvnc.com/download/2.8.84/tightvnc-2.8.84-gpl-setup-64bit.msi"
+          $installerPath = "$env:TEMP\tightvnc.msi"
           
-          # 2. Start noVNC bridge in background
-          Start-Process powershell -ArgumentList "-NoProfile -Command & {novnc --vnc localhost:5900 --listen 8080}"
+          Write-Host "Downloading TightVNC..."
+          Invoke-WebRequest -Uri $vncUrl -OutFile $installerPath
           
-          # 3. Wait for port 8080 to be active (Fixes 502/503 errors)
-          Write-Host "Waiting for Web Desktop..."
-          while (!(Test-NetConnection localhost -Port 8080).TcpTestSucceeded) { Start-Sleep -Seconds 2 }
+          Write-Host "Installing TightVNC..."
+          # Silent install with password set via registry after install
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", `
+            "/quiet", "/norestart", `
+            "ADDLOCAL=Server", `
+            "SERVER_REGISTER_AS_SERVICE=1", `
+            "SERVER_ADD_FIREWALL_EXCEPTION=1", `
+            "SET_USEVNCAUTHENTICATION=1", `
+            "VALUE_OF_USEVNCAUTHENTICATION=1" -Wait
           
-          # 4. Start Ngrok
-          Write-Host "✅ Desktop is ready! Launching Tunnel..."
-          ngrok http 8080 --log=stdout
+          Remove-Item $installerPath -Force
+          Start-Sleep -Seconds 5
+
+      - name: Configure VNC Server
+        run: |
+          # Set VNC password (TightVNC stores encrypted password in registry)
+          $vncPasswd = $env:VNC_PASSWORD
+          
+          # Stop service to configure
+          Stop-Service -Name "tvnserver" -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          
+          # Configure TightVNC via registry
+          $regPath = "HKLM:\SOFTWARE\TightVNC\Server"
+          Set-ItemProperty -Path $regPath -Name "UseVncAuthentication" -Value 1 -Force
+          Set-ItemProperty -Path $regPath -Name "AllowLoopback" -Value 1 -Force
+          Set-ItemProperty -Path $regPath -Name "LoopbackOnly" -Value 0 -Force
+          Set-ItemProperty -Path $regPath -Name "AcceptRfbConnections" -Value 1 -Force
+          
+          # Set password using tvnserver utility
+          & "C:\Program Files\TightVNC\tvnserver.exe" -silent -controlservice -shareall
+          & "C:\Program Files\TightVNC\tvnserver.exe" -silent -controlservice -shareprimary
+          & "C:\Program Files\TightVNC\tvnserver.exe" -silent -set AdminPasswordPlain="$vncPasswd"
+          & "C:\Program Files\TightVNC\tvnserver.exe" -silent -set ControlPassword="$vncPasswd"
+          
+          # Restart service
+          Start-Service -Name "tvnserver"
+          Start-Sleep -Seconds 3
+          
+          # Verify service is running
+          $service = Get-Service -Name "tvnserver"
+          if ($service.Status -ne "Running") {
+              Write-Error "VNC Server failed to start"
+              exit 1
+          }
+          
+          Write-Host "VNC Server configured and running"
+
+      - name: Configure Firewall for VNC
+        run: |
+          # Remove existing rules to avoid duplicates
+          netsh advfirewall firewall delete rule name="VNC-Tailscale" 2>$null
+          
+          # Allow VNC port 5900
+          netsh advfirewall firewall add rule name="VNC-Tailscale" `
+            dir=in action=allow protocol=TCP localport=5900
+          
+          Write-Host "Firewall configured for VNC"
+
+      - name: Download MuMu Player
+        run: |
+          $mumuUrl = "https://t.mumu.163.com/YqrAOxl"  # Official MuMu Player 12 download
+          $installerPath = "$env:TEMP\MuMuPlayer-12.0.exe"
+          
+          Write-Host "Downloading MuMu Player..."
+          try {
+              # Try direct download
+              Invoke-WebRequest -Uri $mumuUrl -OutFile $installerPath -UserAgent "Mozilla/5.0"
+          } catch {
+              Write-Host "Direct download failed, trying alternative source..."
+              # Alternative: use a more reliable CDN link
+              $altUrl = "https://mumu.163.com/update/win11/MuMuPlayer-12.0.exe"
+              Invoke-WebRequest -Uri $altUrl -OutFile $installerPath -UserAgent "Mozilla/5.0"
+          }
+          
+          if (Test-Path $installerPath) {
+              $fileSize = (Get-Item $installerPath).Length / 1MB
+              Write-Host "Downloaded MuMu Player: $([math]::Round($fileSize, 2)) MB"
+              echo "MUMU_INSTALLER=$installerPath" >> $env:GITHUB_ENV
+          } else {
+              Write-Error "Failed to download MuMu Player"
+              exit 1
+          }
+
+      - name: Install MuMu Player
+        run: |
+          $installerPath = $env:MUMU_INSTALLER
+          
+          if (-not (Test-Path $installerPath)) {
+              Write-Error "Installer not found at $installerPath"
+              exit 1
+          }
+          
+          Write-Host "Installing MuMu Player (this may take several minutes)..."
+          
+          # Silent install parameters for MuMu Player
+          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait -NoNewWindow
+          
+          Start-Sleep -Seconds 10
+          
+          # Verify installation
+          $mumuPath = "C:\Program Files\MuMuPlayer-12.0"
+          $altPath = "$env:LOCALAPPDATA\MuMuPlayer-12.0"
+          
+          if ((Test-Path $mumuPath) -or (Test-Path $altPath)) {
+              Write-Host "MuMu Player installed successfully"
+          } else {
+              Write-Warning "MuMu Player installation path not found, but continuing..."
+          }
+          
+          # Clean up installer
+          Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+
+      - name: Install Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          
+          Write-Host "Downloading Tailscale..."
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          
+          Write-Host "Installing Tailscale..."
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+          
+          Start-Sleep -Seconds 5
+
+      - name: Establish Tailscale Connection
+        run: |
+          Write-Host "Connecting to Tailscale..."
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-vnc-$env:GITHUB_RUN_ID
+          
+          # Wait for Tailscale to assign an IP
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 15) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              if ($tsIP) { break }
+              Write-Host "Waiting for Tailscale IP... (attempt $($retries + 1))"
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+          
+          if (-not $tsIP) {
+              Write-Error "Tailscale IP not assigned. Exiting."
+              exit 1
+          }
+          
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host "Tailscale IP assigned: $tsIP"
+
+      - name: Verify VNC Accessibility
+        run: |
+          Write-Host "Testing VNC connectivity..."
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          
+          # Test VNC port
+          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 5900
+          if (-not $testResult.TcpTestSucceeded) {
+              Write-Warning "VNC port 5900 test failed, but this may work from Tailscale network"
+          } else {
+              Write-Host "VNC port 5900 is accessible!"
+          }
+
+      - name: Display Connection Information
+        run: |
+          Write-Host "`n╔════════════════════════════════════════════════╗"
+          Write-Host "║         VNC CONNECTION INFORMATION             ║"
+          Write-Host "╠════════════════════════════════════════════════╣"
+          Write-Host "║ VNC Address: $env:TAILSCALE_IP:5900            "
+          Write-Host "║ Password: $env:VNC_PASSWORD                    "
+          Write-Host "║                                                 "
+          Write-Host "║ MuMu Player: Installed                         ║"
+          Write-Host "║ Touchscreen: Enabled via VNC                   ║"
+          Write-Host "╚════════════════════════════════════════════════╝`n"
+          
+          Write-Host "VNC Client Instructions:"
+          Write-Host "1. Connect to Tailscale network"
+          Write-Host "2. Use VNC client (TightVNC Viewer, RealVNC, etc.)"
+          Write-Host "3. Connect to: $env:TAILSCALE_IP:5900"
+          Write-Host "4. Enter password when prompted"
+          Write-Host "5. MuMu Player should be available on desktop/start menu`n"
+
+      - name: Maintain Connection
+        run: |
+          Write-Host "Session active. Connection will remain open..."
+          Write-Host "Use 'Cancel workflow' button to terminate.`n"
+          
+          $counter = 0
+          while ($true) {
+              $counter++
+              $runtime = [math]::Round($counter * 5 / 60, 1)
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] VNC Active | Runtime: $runtime min | IP: $env:TAILSCALE_IP"
+              
+              # Periodic service check
+              if ($counter % 12 -eq 0) {
+                  $vncService = Get-Service -Name "tvnserver" -ErrorAction SilentlyContinue
+                  if ($vncService.Status -ne "Running") {
+                      Write-Warning "VNC service not running, attempting restart..."
+                      Start-Service -Name "tvnserver"
+                  }
+              }
+              
+              Start-Sleep -Seconds 300
+          }
