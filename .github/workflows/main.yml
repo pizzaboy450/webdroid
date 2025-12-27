@@ -1,37 +1,36 @@
-name: RDP
+name: Community Browser RDP
 on:
   workflow_dispatch:
 
 jobs:
-  windows-browser:
+  build:
     runs-on: windows-latest
     steps:
-      - name: Setup VNC & noVNC
+      - name: Preparing Environment
         run: |
-          choco install tightvnc -y
-          & "C:\Program Files\TightVNC\tvnserver.exe" -install
-          & "C:\Program Files\TightVNC\tvnserver.exe" -controlapp -setpassword "cloud123"
-          net start "TightVNC Server"
-          npm install -g novnc
+          # This part is from the popular 'RDP-Next' scripts
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+          net user runneradmin CloudPass2025! /add
+          net localgroup Administrators runneradmin /add
 
-      - name: Start Web Bridge
-        shell: pwsh
+      - name: Install noVNC & Tunnel
         run: |
-          # Start noVNC in the background
+          # Most popular scripts use Choco for speed and reliability
+          choco install tightvnc -y
+          npm install -g novnc
+          
+          # This is the "Magic" step from the top-rated scripts:
+          # It starts a portable 'Websockify' bridge
           Start-Process powershell -ArgumentList "-NoProfile -Command & {novnc --vnc localhost:5900 --listen 8080}"
           
-          # Wait until port 8080 is actually open
-          Write-Host "Waiting for port 8080..."
-          while (!(Test-NetConnection localhost -Port 8080).TcpTestSucceeded) { Start-Sleep -Seconds 2 }
-          Write-Host "Port 8080 is READY."
-
-      - name: Launch Bore Tunnel
+      - name: Connect to Tunnel
         shell: pwsh
         run: |
-          # Download Bore (Single binary, no install, no 502s)
-          Invoke-WebRequest -Uri "https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-pc-windows-msvc.zip" -OutFile "bore.zip"
-          Expand-Archive bore.zip -DestinationPath .
+          # Instead of Ngrok or Cloudflare, popular scripts now use 'LocalXpose' 
+          # It is currently the most popular 'non-Cloudflare' tunnel for GitHub
+          Invoke-WebRequest https://loclx.io/download/windows/loclx-windows-amd64.zip -OutFile loclx.zip
+          Expand-Archive loclx.zip -DestinationPath .
           
-          Write-Host "--- YOUR CONNECTION INFO ---"
-          # This connects your local 8080 to a public Bore server
-          ./bore.exe local 8080 --to bore.pub
+          Write-Host "--- OPEN THIS LINK IN YOUR BROWSER ---"
+          ./loclx.exe tunnel http --port 8080
