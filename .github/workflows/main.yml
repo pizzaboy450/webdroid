@@ -1,86 +1,53 @@
-name: Ngrok Cloud RDP
+name: Real Windows Browser
 on:
   workflow_dispatch:
     inputs:
       ngrok_token:
-        description: 'Your Ngrok Authtoken'
+        description: 'Ngrok Token'
         required: true
 
 jobs:
-  rdp-tunnel:
+  windows-web:
     runs-on: windows-latest
     timeout-minutes: 3600
-
     steps:
-      - name: Configure RDP & Touch Optimization
+      - name: Configure Windows RDP
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+          # Enable Tablet Mode for better touch
           reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ImmersiveShell" /v "TabletMode" /t REG_DWORD /d 1 /f
 
       - name: Create RDP User
         run: |
-          $password = "CloudRDP2025!"
+          $password = "CloudPass2025!"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          if (-not (Get-LocalUser -Name "RDPUser" -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name "RDPUser" -Password $securePass -AccountNeverExpires
-              Add-LocalGroupMember -Group "Administrators" -Member "RDPUser"
-              Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDPUser"
-          }
+          New-LocalUser -Name "CloudUser" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "CloudUser"
           echo "PASSWORD=$password" >> $env:GITHUB_ENV
-
-      - name: Install Ngrok
-        run: choco install ngrok -y
 
       - name: Start Ngrok Tunnel
         shell: pwsh
         run: |
-          # Kill any old ngrok instances just in case
-          Stop-Process -Name "ngrok" -ErrorAction SilentlyContinue
-          
-          # Auth and Start
-          & ngrok config add-authtoken ${{ github.event.inputs.ngrok_token }}
-          
-          # Launching with --log=stdout helps keep the process 'real' in the background
-          Start-Process -FilePath "ngrok.exe" -ArgumentList "tcp 3389 --log=stdout" -WindowStyle Hidden
-          
-          Write-Host "Ngrok process started. Waiting for API..."
-          Start-Sleep -Seconds 15
+          choco install ngrok -y
+          ngrok config add-authtoken ${{ github.event.inputs.ngrok_token }}
+          # Tunnel the RDP port
+          Start-Process ngrok -ArgumentList "tcp 3389"
+          Start-Sleep -Seconds 10
 
-      - name: Get Connection Details
+      - name: Get Public Link
         shell: pwsh
         run: |
-          $attempts = 0
-          $maxAttempts = 15 # Increased retries
-          $JSON = $null
+          $JSON = Invoke-RestMethod http://localhost:4040/api/tunnels
+          $PublicURL = $JSON.tunnels[0].public_url -replace 'tcp://', ''
           
-          while($null -eq $JSON -and $attempts -lt $maxAttempts) {
-              try {
-                  # We check the local API that ngrok runs
-                  $JSON = Invoke-RestMethod http://localhost:4040/api/tunnels
-              } catch {
-                  $attempts++
-                  Write-Host "Ngrok API not ready (Attempt $attempts)..."
-                  Start-Sleep -Seconds 5
-              }
-          }
-
-          if ($JSON -and $JSON.tunnels) {
-              $PublicURL = $JSON.tunnels[0].public_url -replace 'tcp://', ''
-              Write-Host "`n=========================================="
-              Write-Host "✅ CONNECT TO: $PublicURL"
-              Write-Host "👤 USERNAME: RDPUser"
-              Write-Host "🔑 PASSWORD: ${{ env.PASSWORD }}"
-              Write-Host "==========================================`n"
-          } else {
-              Write-Error "Ngrok failed to provide a public URL. Check if your token is valid!"
-              exit 1
-          }
-
-      - name: Maintain Connection
-        run: |
-          while ($true) {
-              Write-Host "[$(Get-Date)] Connection Active..."
-              Start-Sleep -Seconds 300
-          }
+          Write-Host "`n=========================================="
+          Write-Host "✅ WINDOWS IS ONLINE"
+          Write-Host "ADDRESS: $PublicURL"
+          Write-Host "USER: CloudUser"
+          Write-Host "PASS: ${{ env.PASSWORD }}"
+          Write-Host "==========================================`n"
+          
+          # Maintain connection
+          while($true) { Start-Sleep -Seconds 300 }
