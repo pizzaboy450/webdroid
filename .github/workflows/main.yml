@@ -1,14 +1,14 @@
 name: Remote Android GUI
 on: 
-  workflow_dispatch: # Allows triggering from a web page/API
+  workflow_dispatch:
     inputs:
       ngrok_token:
         description: 'Your Ngrok Authtoken'
         required: true
 
 jobs:
-  android-emulator:
-    runs-on: macos-latest # macOS is required for high-speed hardware acceleration
+  android:
+    runs-on: macos-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,22 +22,24 @@ jobs:
       - name: Install Ngrok
         run: brew install ngrok/ngrok/ngrok
 
-      - name: Start Android Emulator & VNC
+      - name: Run Android Emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 29
+          api-level: 28 # API 28 is much more stable on GitHub than 29/30
           target: google_apis
           arch: x86_64
-          profile: Nexus 6
+          # SWIFTSHADER is the key—it forces the CPU to do the graphics work
+          # so it doesn't wait for a GPU that isn't there.
+          emulator-options: -no-window -gpu swiftshader_indirect -no-audio -no-boot-anim -qemu -vnc :0
+          disable-animations: true
+          # We increase the timeout to 15 mins (900s) just in case
+          emulator-boot-timeout: 900
           script: |
-            # Start a VNC server inside the emulator environment
-            # This is complex in headless, so we use a simplified bridge
-            echo "Emulator is up. Starting network bridge..."
+            echo "Emulator is alive! Setting up tunnel..."
             ngrok config add-authtoken ${{ github.event.inputs.ngrok_token }}
             
-            # Start ngrok to tunnel the Emulator's internal ADB/VNC port
-            # Note: For full GUI, we usually tunnel port 5900 (VNC)
+            # Start tunnel for VNC (port 5900)
             ngrok tcp 5900 --log=stdout &
             
-            # Keep the action alive for 1 hour so you can use the app
+            # This keeps the session open for you to use
             sleep 3600
