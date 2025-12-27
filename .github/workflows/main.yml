@@ -1,4 +1,4 @@
-name: Iframe RDP
+name: Fixed Iframe RDP
 on:
   workflow_dispatch:
 
@@ -6,18 +6,31 @@ jobs:
   run-rdp:
     runs-on: windows-latest
     steps:
-      - name: Start noVNC
+      - name: Install Tools
         run: |
           choco install tightvnc cloudflared -y
-          # Setup VNC Password
-          & "C:\Program Files\TightVNC\tvnserver.exe" -controlapp -setpassword "cloud123"
-          net start "TightVNC Server"
-          # Start the Web-to-VNC translator
           npm install -g novnc
-          Start-Process powershell -ArgumentList "-NoProfile -Command & {novnc --vnc localhost:5900 --listen 8080}"
 
-      - name: Create Iframe Tunnel
+      - name: Start VNC & Bridge
         shell: pwsh
         run: |
-          # This gives the noVNC server a public URL that an Iframe can see
+          # 1. Start VNC Server
+          & "C:\Program Files\TightVNC\tvnserver.exe" -install
+          & "C:\Program Files\TightVNC\tvnserver.exe" -controlapp -setpassword "cloud123"
+          net start "TightVNC Server"
+
+          # 2. Start noVNC Bridge in background
+          Start-Process powershell -ArgumentList "-NoProfile -Command & {novnc --vnc localhost:5900 --listen 8080}"
+          
+          # 3. CRITICAL: Wait for port 8080 to actually be alive before moving on
+          Write-Host "Waiting for noVNC to wake up..."
+          while (!(Test-NetConnection localhost -Port 8080).TcpTestSucceeded) {
+              Start-Sleep -Seconds 2
+          }
+          Write-Host "noVNC is alive on 8080!"
+
+      - name: Launch Tunnel
+        shell: pwsh
+        run: |
+          # Use the --http-header to help keep the connection stable for iframes
           cloudflared tunnel --url http://localhost:8080
