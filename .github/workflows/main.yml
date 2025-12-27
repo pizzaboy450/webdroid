@@ -1,0 +1,43 @@
+name: Remote Android GUI
+on: 
+  workflow_dispatch: # Allows triggering from a web page/API
+    inputs:
+      ngrok_token:
+        description: 'Your Ngrok Authtoken'
+        required: true
+
+jobs:
+  android-emulator:
+    runs-on: macos-latest # macOS is required for high-speed hardware acceleration
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install Ngrok
+        run: brew install ngrok/ngrok/ngrok
+
+      - name: Start Android Emulator & VNC
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          target: google_apis
+          arch: x86_64
+          profile: Nexus 6
+          script: |
+            # Start a VNC server inside the emulator environment
+            # This is complex in headless, so we use a simplified bridge
+            echo "Emulator is up. Starting network bridge..."
+            ngrok config add-authtoken ${{ github.event.inputs.ngrok_token }}
+            
+            # Start ngrok to tunnel the Emulator's internal ADB/VNC port
+            # Note: For full GUI, we usually tunnel port 5900 (VNC)
+            ngrok tcp 5900 --log=stdout &
+            
+            # Keep the action alive for 1 hour so you can use the app
+            sleep 3600
