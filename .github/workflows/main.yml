@@ -6,37 +6,40 @@ jobs:
   rdp-task:
     runs-on: windows-latest
     steps:
-      - name: Setup
+      - name: Setup Windows
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
           net user runneradmin CloudPass2025!
 
-      - name: Tunnel
+      - name: Launch Tunnel
         shell: pwsh
         run: |
+          # 1. Install Cloudflared
           Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.msi" -OutFile "cf.msi"
           Start-Process msiexec.exe -ArgumentList "/i", "cf.msi", "/quiet" -Wait
-          Start-Process powershell -ArgumentList "-NoProfile -Command & {cloudflared tunnel --url tcp://localhost:3389 > log.txt 2>&1}"
           
-          $url = $null
-          while($null -eq $url) {
-            Start-Sleep -Seconds 5
-            if (Test-Path log.txt) {
-              $content = Get-Content log.txt
-              $match = $content | Select-String -Pattern "https://[a-z0-9-.]*trycloudflare.com"
-              if ($match) {
-                $url = $match.Matches.Value
-                Write-Host "URL_FOUND=$url"
+          # 2. Start Tunnel and pipe directly to the console so you can SEE the link
+          Write-Host "--- WAITING FOR LINK (Watch below) ---"
+          Start-Process powershell -ArgumentList "-NoProfile -Command & {cloudflared tunnel --url tcp://localhost:3389}"
+          
+          # 3. This small loop will grab the link and print it BIG
+          $found = $false
+          while (-not $found) {
+              $log = Get-Content -Path "$env:USERPROFILE\.cloudflared\*.log" -ErrorAction SilentlyContinue | Select-String "trycloudflare.com"
+              if ($log) {
+                  $url = ($log | Select-Object -First 1).ToString().Split(" ")[-1]
+                  Write-Host "`n`n=========================================="
+                  Write-Host "✅ YOUR LINK IS: $url"
+                  Write-Host "USER: runneradmin"
+                  Write-Host "PASS: CloudPass2025!"
+                  Write-Host "==========================================`n`n"
+                  $found = $true
               }
-            }
+              Start-Sleep -Seconds 2
           }
-          
-          Write-Host "=========================================="
-          Write-Host "URL: $url"
-          Write-Host "USER: runneradmin"
-          Write-Host "PASS: CloudPass2025!"
-          Write-Host "=========================================="
-          
+
+      - name: Keep Alive
+        run: |
           while($true) { Start-Sleep -Seconds 300 }
