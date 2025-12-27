@@ -1,36 +1,49 @@
-name: Fixed Iframe RDP
+name: Browser Windows Native
 on:
   workflow_dispatch:
 
 jobs:
-  run-rdp:
+  windows-web:
     runs-on: windows-latest
     steps:
-      - name: Install Tools
+      - name: Configure Windows
         run: |
-          choco install tightvnc cloudflared -y
-          npm install -g novnc
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+          netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+          net user runneradmin CloudPass2025!
 
-      - name: Start VNC & Bridge
+      - name: Deploy MeshCentral Web Gateway
         shell: pwsh
         run: |
-          # 1. Start VNC Server
-          & "C:\Program Files\TightVNC\tvnserver.exe" -install
-          & "C:\Program Files\TightVNC\tvnserver.exe" -controlapp -setpassword "cloud123"
-          net start "TightVNC Server"
-
-          # 2. Start noVNC Bridge in background
-          Start-Process powershell -ArgumentList "-NoProfile -Command & {novnc --vnc localhost:5900 --listen 8080}"
+          # Install MeshCentral locally on the runner
+          npm install meshcentral
           
-          # 3. CRITICAL: Wait for port 8080 to actually be alive before moving on
-          Write-Host "Waiting for noVNC to wake up..."
-          while (!(Test-NetConnection localhost -Port 8080).TcpTestSucceeded) {
-              Start-Sleep -Seconds 2
-          }
-          Write-Host "noVNC is alive on 8080!"
+          # This starts a "Mesh" agent that creates its own web-reachable identity
+          # No tunnel software needed because it uses a Web-Socket bridge
+          $MeshConfig = @{
+              settings = @{
+                  port = 8080
+                  redirport = 80
+              }
+          } | ConvertTo-Json
+          $MeshConfig | Out-File "meshcentral-data/config.json" -Encoding utf8
+          
+          Start-Process node -ArgumentList "node_modules/meshcentral" -WindowStyle Hidden
 
-      - name: Launch Tunnel
+      - name: Start Tmate Web Bridge
         shell: pwsh
         run: |
-          # Use the --http-header to help keep the connection stable for iframes
-          cloudflared tunnel --url http://localhost:8080
+          # We use Tmate ONLY to provide the browser URL (The website itself is the Windows Desktop)
+          # Tmate is native to GitHub Runners and requires zero configuration
+          pacman -S tmate --noconfirm
+          tmate -S /tmp/tmate.sock new-session -d
+          Start-Sleep -Seconds 5
+          $url = tmate -S /tmp/tmate.sock display -p "#{tmate_web}"
+          
+          Write-Host "`n=========================================="
+          Write-Host "✅ WINDOWS BROWSER ACCESS"
+          Write-Host "URL: $url"
+          Write-Host "==========================================`n"
+          
+          while($true) { Start-Sleep -Seconds 300 }
