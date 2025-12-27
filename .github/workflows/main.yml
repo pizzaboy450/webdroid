@@ -1,45 +1,34 @@
-name: Remote Android GUI
+name: Online Web Android
 on: 
   workflow_dispatch:
     inputs:
       ngrok_token:
-        description: 'Your Ngrok Authtoken'
+        description: 'Ngrok Token'
         required: true
 
 jobs:
-  android:
-    runs-on: macos-latest
+  web-android:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
 
-      - name: Set up JDK
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
+      - name: Start Docker Android with Web VNC
+        run: |
+          docker run -d -p 6080:6080 --device /dev/kvm --name android-container \
+          -e EMULATOR_DEVICE="Samsung Galaxy S10" \
+          -e WEB_VNC=true \
+          budtmo/docker-android:emulator_11.0
 
-      - name: Install Ngrok
-        run: brew install ngrok/ngrok/ngrok
-
-      - name: Run Android Emulator
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 28 # API 28 is much more stable on GitHub than 29/30
-          target: google_apis
-          arch: x86_64
-          # SWIFTSHADER is the key—it forces the CPU to do the graphics work
-          # so it doesn't wait for a GPU that isn't there.
-          emulator-options: -no-window -gpu swiftshader_indirect -no-audio -no-boot-anim -qemu -vnc :0
-          disable-animations: true
-          # We increase the timeout to 15 mins (900s) just in case
-          emulator-boot-timeout: 900
-          script: |
-            echo "Emulator is alive! Setting up tunnel..."
-            ngrok config add-authtoken ${{ github.event.inputs.ngrok_token }}
-            
-            # Start tunnel for VNC (port 5900)
-            ngrok tcp 5900 --log=stdout &
-            
-            # This keeps the session open for you to use
-            sleep 3600
+      - name: Install & Start Ngrok
+        run: |
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt update && sudo apt install ngrok
+          ngrok config add-authtoken ${{ github.event.inputs.ngrok_token }}
+          # Tunnel port 6080 (the web interface)
+          ngrok http 6080 --log=stdout &
+          sleep 3600
