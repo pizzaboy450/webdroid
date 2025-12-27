@@ -1,4 +1,4 @@
-name: Online Web Android
+name: Redroid Fullscreen Web
 on: 
   workflow_dispatch:
     inputs:
@@ -7,30 +7,41 @@ on:
         required: true
 
 jobs:
-  web-android:
+  redroid:
     runs-on: ubuntu-latest
     steps:
-      - name: Enable KVM
+      - name: Install Kernel Modules
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
+          sudo apt-get update
+          sudo apt-get install -y linux-modules-extra-$(uname -r)
+          sudo modprobe binder_linux
+          sudo modprobe ashmem_linux
 
-      - name: Start Full-Screen Docker Android
+      - name: Start Redroid (Android 11)
         run: |
-          docker run -d -p 6080:6080 --device /dev/kvm --name android-container \
-          -e EMULATOR_DEVICE="Nexus 9" \
-          -e WEB_VNC=true \
-          -e DEVICE_RES="1920x1080" \
-          -e ENABLE_REVERSE_PROXY=true \
-          budtmo/docker-android:emulator_11.0
+          # Start the Android core
+          docker run -d --privileged \
+            --name redroid \
+            -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=1920 \
+            androidboot.redroid_height=1080 \
+            androidboot.redroid_dpi=480
 
-      - name: Install & Start Ngrok
+      - name: Start VNC Web Server
+        run: |
+          # This container grabs the Redroid screen and puts it on a website
+          docker run -d \
+            --name vnc-web \
+            --link redroid:android \
+            -p 6080:6080 \
+            remote-android/redroid-vncserver:latest
+
+      - name: Tunnel with Ngrok
         run: |
           curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
           echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
           sudo apt update && sudo apt install ngrok
           ngrok config add-authtoken ${{ github.event.inputs.ngrok_token }}
-          # Tunnel port 6080
           ngrok http 6080 --log=stdout &
           sleep 3600
