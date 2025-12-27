@@ -16,11 +16,13 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Start Docker Android with Web VNC
+      - name: Start Full-Screen Docker Android
         run: |
           docker run -d -p 6080:6080 --device /dev/kvm --name android-container \
-          -e EMULATOR_DEVICE="Samsung Galaxy S10" \
+          -e EMULATOR_DEVICE="Nexus 9" \
           -e WEB_VNC=true \
+          -e DEVICE_RES="1920x1080" \
+          -e ENABLE_REVERSE_PROXY=true \
           budtmo/docker-android:emulator_11.0
 
       - name: Install & Start Ngrok
@@ -29,6 +31,6 @@ jobs:
           echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
           sudo apt update && sudo apt install ngrok
           ngrok config add-authtoken ${{ github.event.inputs.ngrok_token }}
-          # Tunnel port 6080 (the web interface)
+          # Tunnel port 6080
           ngrok http 6080 --log=stdout &
           sleep 3600
