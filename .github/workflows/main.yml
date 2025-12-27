@@ -1,4 +1,4 @@
-name: MuMu Web Touch
+name: Ngrok Cloud RDP
 on:
   workflow_dispatch:
     inputs:
@@ -7,52 +7,60 @@ on:
         required: true
 
 jobs:
-  mumu-rdp:
+  rdp-tunnel:
     runs-on: windows-latest
     timeout-minutes: 3600
 
     steps:
-      - name: Install MuMu Player (Silent)
+      - name: Configure RDP & Touch Optimization
         run: |
-          $url = "https://api.mumu.163.com/api/v1/download?product_id=1&channel=official"
-          Invoke-WebRequest -Uri $url -OutFile "mumu_installer.exe"
-          Start-Process ./mumu_installer.exe -ArgumentList "/S" -Wait
-          Write-Host "MuMu Player Installed."
+          # Enable RDP
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+          
+          # Allow RDP through Firewall
+          netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+          
+          # Force Tablet Mode / Touch optimization
+          reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ImmersiveShell" /v "TabletMode" /t REG_DWORD /d 1 /f
 
-      - name: Install VNC Server & Ngrok
+      - name: Create RDP User
         run: |
-          choco install tightvnc ngrok -y
+          $password = "CloudRDP2025!"
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "RDPUser" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "RDPUser"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDPUser"
+          echo "PASSWORD=$password" >> $env:GITHUB_ENV
 
-      - name: Configure VNC for Web Access
-        shell: powershell
-        run: |
-          # Set VNC password to 'mumu123' (Required for the service to start)
-          $pass = "mumu123"
-          & "C:\Program Files\TightVNC\tvnserver.exe" -install
-          & "C:\Program Files\TightVNC\tvnserver.exe" -controlapp -setpassword $pass
-          & "C:\Program Files\TightVNC\tvnserver.exe" -controlapp -setviewonlypassword $pass
-          net start "TightVNC Server"
+      - name: Install Ngrok
+        run: choco install ngrok -y
 
-      - name: Start MuMu Player
+      - name: Start Ngrok Tunnel
+        shell: pwsh
         run: |
-          # Start MuMu in the background
-          Start-Process "C:\Program Files (x86)\MuMuPlayer-12.0\shell\MuMuPlayer.exe"
-          Write-Host "MuMu is booting..."
-
-      - name: Launch Web-VNC Bridge & Tunnel
-        shell: powershell
-        run: |
-          # Add Ngrok Token
           ngrok config add-authtoken ${{ github.event.inputs.ngrok_token }}
+          # Start TCP tunnel on RDP port 3389
+          Start-Process ngrok -ArgumentList "tcp 3389"
           
-          # Use Ngrok to tunnel the VNC port (5900)
-          # We use 'http' mode with ngrok's built-in VNC-to-Web converter if available, 
-          # or simply tunnel the TCP port for use with novnc.com
-          Write-Host "URL will be available on your Ngrok Dashboard"
-          Start-Process ngrok -ArgumentList "tcp 5900"
+          Write-Host "Waiting for tunnel to initialize..."
+          Start-Sleep -Seconds 10
+
+      - name: Get Connection Details
+        shell: pwsh
+        run: |
+          # Query Ngrok API to find the public URL
+          $JSON = Invoke-RestMethod http://localhost:4040/api/tunnels
+          $PublicURL = $JSON.tunnels.public_url -replace 'tcp://', ''
           
-          # Keep the runner alive
+          Write-Host "`n=========================================="
+          Write-Host "CONNECT TO: $PublicURL"
+          Write-Host "USERNAME: RDPUser"
+          Write-Host "PASSWORD: ${{ env.PASSWORD }}"
+          Write-Host "==========================================`n"
+
+      - name: Maintain Connection
+        run: |
           while ($true) {
-              Write-Host "Cloud Android is Online... Use a VNC Web client to connect to the Ngrok TCP address."
               Start-Sleep -Seconds 300
           }
