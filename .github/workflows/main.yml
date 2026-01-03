@@ -22,8 +22,9 @@ jobs:
         shell: powershell
         run: |
           if (!(Test-Path "C:\temp\hls")) { New-Item -ItemType Directory -Path "C:\temp\hls" -Force }
-          $nginxExe = (Get-ChildItem -Path C:\tools -Filter nginx.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-          if (!$nginxExe) { $nginxExe = (Get-ChildItem -Path "C:\ProgramData\chocolatey" -Filter nginx.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName }
+          
+          # Find Nginx path
+          $nginxExe = (Get-ChildItem -Path C:\tools, C:\ProgramData\chocolatey -Filter nginx.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
           $nginxDir = Split-Path $nginxExe
           $confPath = Join-Path $nginxDir "conf\nginx.conf"
 
@@ -54,11 +55,14 @@ jobs:
           "@
           Set-Content -Path $confPath -Value $conf
 
-          Start-Job -ScriptBlock {
-              param($dir)
-              cd $dir
-              .\nginx.exe
-          } -ArgumentList $nginxDir
+          # KILL GHOST PROCESSES AND START FRESH
+          taskkill /F /IM nginx.exe /T 2>$null
+          cd $nginxDir
+          Start-Process .\nginx.exe -WorkingDirectory $nginxDir
+          
+          # VERIFY NGINX IS LIVE BEFORE CONTINUING
+          Start-Sleep -Seconds 5
+          if (!(netstat -ano | findstr ":80")) { throw "Nginx failed to start on Port 80" }
 
       - name: Inject OBS Settings
         shell: powershell
@@ -81,7 +85,6 @@ jobs:
           $streamUrl = "$url/hls/live.m3u8"
           Set-Content -Path "current_stream.txt" -Value $streamUrl
           
-          # Fixed PowerShell Git Logic
           git config --global user.name "StreamBot"
           git config --global user.email "bot@github.com"
           git add current_stream.txt
@@ -89,8 +92,6 @@ jobs:
           if ($status) {
               git commit -m "Update Stream URL [skip ci]"
               git push
-          } else {
-              Write-Host "No changes to current_stream.txt. Skipping push."
           }
 
       - name: Start OBS Studio
