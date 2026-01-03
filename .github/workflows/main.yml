@@ -15,6 +15,7 @@ jobs:
 
       - name: Install Tools
         run: |
+          # Added --skip-already-installed to prevent the error seen in your screenshot
           choco install nginx obs-studio ffmpeg ngrok vb-cable -y --skip-already-installed
         shell: powershell
 
@@ -22,6 +23,8 @@ jobs:
         shell: powershell
         run: |
           if (!(Test-Path "C:\temp\hls")) { New-Item -ItemType Directory -Path "C:\temp\hls" -Force }
+          
+          # Find Nginx path dynamically regardless of version
           $nginxExe = (Get-ChildItem -Path C:\ -Filter nginx.exe -Recurse | Select-Object -First 1).FullName
           $nginxDir = Split-Path $nginxExe
           $confPath = Join-Path $nginxDir "conf\nginx.conf"
@@ -53,13 +56,13 @@ jobs:
           "@
           Set-Content -Path $confPath -Value $conf
 
-          # START DETACHED: This prevents the 'hanging' in the logs
+          # START DETACHED: This fixes the hanging issue in your screenshot
           Start-Job -ScriptBlock {
               param($dir)
               cd $dir
               .\nginx.exe
           } -ArgumentList $nginxDir
-          Write-Host "Nginx is running in a detached background job."
+          Write-Host "Nginx is now running in a background job."
 
       - name: Inject OBS Settings
         shell: powershell
@@ -68,7 +71,7 @@ jobs:
           if (!(Test-Path $obsSettingsDir)) { New-Item -ItemType Directory -Path $obsSettingsDir -Force }
           $serviceJson = '{"settings":{"key":"","server":"rtmp://127.0.0.1:1935/live"},"type":"rtmp_custom"}'
           Set-Content -Path "$obsSettingsDir\service.json" -Value $serviceJson
-          Write-Host "OBS configured to stream to local Nginx."
+          Write-Host "OBS configured."
 
       - name: Start Ngrok & Save URL
         shell: powershell
@@ -76,7 +79,7 @@ jobs:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
           ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
-          Start-Process ngrok -ArgumentList "http 80" -WindowStyle Hidden
+          Start-Process ngrok -ArgumentList "http 80" -NoNewWindow
           Start-Sleep -Seconds 20
           
           $url = (Invoke-RestMethod http://localhost:4040/api/tunnels).tunnels[0].public_url
@@ -86,7 +89,7 @@ jobs:
           git config --global user.name "StreamBot"
           git config --global user.email "bot@github.com"
           git add current_stream.txt
-          git commit -m "Update Stream URL [skip ci]" || Write-Host "No changes"
+          git commit -m "Update Stream URL [skip ci]" || Write-Host "No changes to commit"
           git push
 
       - name: Start OBS Studio
@@ -104,6 +107,7 @@ jobs:
               Start-Sleep -Seconds 60
           }
           
+          # This triggers the loop
           curl -X POST -H "Authorization: token ${{ secrets.MY_GITHUB_TOKEN }}" `
           -H "Accept: application/vnd.github.v3+json" `
           https://api.github.com/repos/${{ github.repository }}/dispatches `
