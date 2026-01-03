@@ -21,15 +21,11 @@ jobs:
       - name: Configure and Start Nginx
         shell: powershell
         run: |
-          # 1. Setup HLS Folder
           if (!(Test-Path "C:\temp\hls")) { New-Item -ItemType Directory -Path "C:\temp\hls" -Force }
-
-          # 2. Find Nginx Path Dynamically
-          $nginxExe = (Get-ChildItem -Path C:\ -Filter nginx.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          $nginxExe = (Get-ChildItem -Path C:\ -Filter nginx.exe -Recurse | Select-Object -First 1).FullName
           $nginxDir = Split-Path $nginxExe
           $confPath = Join-Path $nginxDir "conf\nginx.conf"
 
-          # 3. Write Config
           $conf = @"
           worker_processes 1;
           events { worker_connections 1024; }
@@ -57,10 +53,10 @@ jobs:
           "@
           Set-Content -Path $confPath -Value $conf
 
-          # 4. Start Nginx
           cd $nginxDir
-          Start-Process .\nginx.exe
-          Write-Host "Nginx started from $nginxDir"
+          # The -WindowStyle Hidden is key to prevent hanging
+          Start-Process .\nginx.exe -WindowStyle Hidden
+          Write-Host "Nginx started in background."
 
       - name: Start Ngrok & Save URL
         shell: powershell
@@ -68,35 +64,37 @@ jobs:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
           ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
-          Start-Process ngrok -ArgumentList "http 80" -NoNewWindow
-          Start-Sleep -Seconds 15
+          # Start Ngrok and don't wait for it
+          Start-Process ngrok -ArgumentList "http 80" -WindowStyle Hidden
+          Start-Sleep -Seconds 20
           
           $url = (Invoke-RestMethod http://localhost:4040/api/tunnels).tunnels[0].public_url
           $streamUrl = "$url/hls/live.m3u8"
           Set-Content -Path "current_stream.txt" -Value $streamUrl
           
-          Write-Host "STREAM URL: $streamUrl"
-
           git config --global user.name "StreamBot"
           git config --global user.email "bot@github.com"
           git add current_stream.txt
-          git commit -m "Update Stream URL [skip ci]" || exit 0
+          git commit -m "Update Stream URL [skip ci]" || Write-Host "No changes to commit"
           git push
 
       - name: Start OBS Studio
         shell: powershell
         run: |
-          # Launches OBS to stream to the local RTMP server configured above
-          # Note: OBS must be set to stream to rtmp://127.0.0.1:1935/live
-          Start-Process "C:\Program Files\obs-studio\bin\64bit\obs64.exe" -ArgumentList "--startstreaming"
+          # Use --allow-opengl to help it run on virtual hardware
+          Start-Process "C:\Program Files\obs-studio\bin\64bit\obs64.exe" -ArgumentList "--startstreaming", "--always-on-top" -WindowStyle Maximized
+          Write-Host "OBS launched."
 
       - name: Run and Auto-Repeat
         shell: powershell
         run: |
-          Write-Host "Streaming live for 5.5 hours..."
-          Start-Sleep -Seconds 19800
+          Write-Host "Streaming... Workflow will auto-restart in 5.5 hours."
+          $timer = [diagnostics.stopwatch]::StartNew()
+          while ($timer.Elapsed.TotalSeconds -lt 19800) {
+              Write-Host "Time elapsed: $($timer.Elapsed.ToString('hh\:mm\:ss'))"
+              Start-Sleep -Seconds 60
+          }
           
-          # Trigger the next run
           curl -X POST -H "Authorization: token ${{ secrets.MY_GITHUB_TOKEN }}" `
           -H "Accept: application/vnd.github.v3+json" `
           https://api.github.com/repos/${{ github.repository }}/dispatches `
