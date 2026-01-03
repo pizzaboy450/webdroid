@@ -53,10 +53,22 @@ jobs:
           "@
           Set-Content -Path $confPath -Value $conf
 
-          cd $nginxDir
-          # The -WindowStyle Hidden is key to prevent hanging
-          Start-Process .\nginx.exe -WindowStyle Hidden
-          Write-Host "Nginx started in background."
+          # START DETACHED: This prevents the 'hanging' in the logs
+          Start-Job -ScriptBlock {
+              param($dir)
+              cd $dir
+              .\nginx.exe
+          } -ArgumentList $nginxDir
+          Write-Host "Nginx is running in a detached background job."
+
+      - name: Inject OBS Settings
+        shell: powershell
+        run: |
+          $obsSettingsDir = "$env:APPDATA\obs-studio\basic\profiles\Untitled"
+          if (!(Test-Path $obsSettingsDir)) { New-Item -ItemType Directory -Path $obsSettingsDir -Force }
+          $serviceJson = '{"settings":{"key":"","server":"rtmp://127.0.0.1:1935/live"},"type":"rtmp_custom"}'
+          Set-Content -Path "$obsSettingsDir\service.json" -Value $serviceJson
+          Write-Host "OBS configured to stream to local Nginx."
 
       - name: Start Ngrok & Save URL
         shell: powershell
@@ -64,7 +76,6 @@ jobs:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
           ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
-          # Start Ngrok and don't wait for it
           Start-Process ngrok -ArgumentList "http 80" -WindowStyle Hidden
           Start-Sleep -Seconds 20
           
@@ -75,15 +86,14 @@ jobs:
           git config --global user.name "StreamBot"
           git config --global user.email "bot@github.com"
           git add current_stream.txt
-          git commit -m "Update Stream URL [skip ci]" || Write-Host "No changes to commit"
+          git commit -m "Update Stream URL [skip ci]" || Write-Host "No changes"
           git push
 
       - name: Start OBS Studio
         shell: powershell
         run: |
-          # Use --allow-opengl to help it run on virtual hardware
-          Start-Process "C:\Program Files\obs-studio\bin\64bit\obs64.exe" -ArgumentList "--startstreaming", "--always-on-top" -WindowStyle Maximized
-          Write-Host "OBS launched."
+          Start-Process "C:\Program Files\obs-studio\bin\64bit\obs64.exe" -ArgumentList "--startstreaming"
+          Write-Host "OBS launched and streaming."
 
       - name: Run and Auto-Repeat
         shell: powershell
@@ -91,7 +101,6 @@ jobs:
           Write-Host "Streaming... Workflow will auto-restart in 5.5 hours."
           $timer = [diagnostics.stopwatch]::StartNew()
           while ($timer.Elapsed.TotalSeconds -lt 19800) {
-              Write-Host "Time elapsed: $($timer.Elapsed.ToString('hh\:mm\:ss'))"
               Start-Sleep -Seconds 60
           }
           
