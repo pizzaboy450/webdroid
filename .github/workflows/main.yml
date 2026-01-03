@@ -1,4 +1,4 @@
-name: Windows HD Stream (Auto-Repeat)
+name: Windows HD Stream Final
 on: 
   workflow_dispatch:
   repository_dispatch:
@@ -7,75 +7,60 @@ on:
 jobs:
   stream_desktop:
     runs-on: windows-latest
+    permissions:
+      contents: write # Needed to save the URL to the repo
     steps:
-      - name: Install Tools & Virtual Audio
-        run: |
-          choco install nginx obs-studio ffmpeg ngrok screencapturererecorder -y --no-progress
-        shell: powershell
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-      - name: Configure Nginx
-        shell: powershell
+      - name: Install Tools
         run: |
-          $nginxConfPath = "C:\tools\nginx-1.24.0\conf\nginx.conf" # Standard Choco path
-          if (!(Test-Path "C:\temp\hls")) { New-Item -ItemType Directory -Path "C:\temp\hls" -Force }
-          $conf = @"
-          worker_processes 1;
-          events { worker_connections 1024; }
-          rtmp {
-              server {
-                  listen 1935;
-                  application live {
-                      live on;
-                      hls on;
-                      hls_path C:/temp/hls;
-                      hls_fragment 3s;
-                  }
-              }
-          }
-          http {
-              server {
-                  listen 80;
-                  location /hls {
-                      root C:/temp;
-                      add_header Access-Control-Allow-Origin *;
-                  }
-              }
-          }
-          "@
-          Set-Content -Path $nginxConfPath -Value $conf
+          choco install nginx --version 1.24.0 -y --skip-already-installed
+          choco install obs-studio ffmpeg ngrok vb-cable -y --skip-already-installed
+        shell: powershell
 
       - name: Start Nginx
         shell: powershell
         run: |
-          $nginxPath = (Get-ChildItem -Path C:\ -Filter nginx.exe -Recurse | Select-Object -First 1).FullName
-          cd (Split-Path $nginxPath)
+          # Create HLS directory
+          if (!(Test-Path "C:\temp\hls")) { New-Item -ItemType Directory -Path "C:\temp\hls" -Force }
+          # Move to Nginx folder and start
+          cd C:\tools\nginx-1.24.0
           Start-Process .\nginx.exe
-
-      - name: Start Ngrok & Get URL
+          
+      - name: Start Ngrok & Save URL
         shell: powershell
-        id: ngrok_step
         env:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
           ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
           Start-Process ngrok -ArgumentList "http 80" -NoNewWindow
-          Start-Sleep -Seconds 10
+          Start-Sleep -Seconds 15
           $url = (Invoke-RestMethod http://localhost:4040/api/tunnels).tunnels[0].public_url
-          Write-Host "STREAM URL: $url/hls/live.m3u8"
+          $streamUrl = "$url/hls/live.m3u8"
+          Set-Content -Path "current_stream.txt" -Value $streamUrl
+          
+          # Push URL to repo so Extension can find it
+          git config --global user.name "StreamBot"
+          git config --global user.email "bot@github.com"
+          git add current_stream.txt
+          git commit -m "Update Stream URL [skip ci]"
+          git push
 
       - name: Start OBS Studio
         shell: powershell
         run: |
+          # Starts OBS in the background
           Start-Process "C:\Program Files\obs-studio\bin\64bit\obs64.exe" -ArgumentList "--startstreaming"
 
-      - name: Run for 5.5 Hours
+      - name: Run and Repeat
         shell: powershell
-        run: Start-Sleep -Seconds 19800 # 5.5 hours
-
-      - name: Trigger Next Run
-        if: always()
         run: |
-          curl -X POST -H "Authorization: token ${{ secrets.MY_GITHUB_TOKEN }}" \
-          -H "Accept: application/vnd.github.v3+json" \
-          https://api.github.com/repos/${{ github.repository }}/dispatches \
+          Write-Host "Streaming for 5 hours..."
+          Start-Sleep -Seconds 18000
+          
+          # Trigger next run
+          curl -X POST -H "Authorization: token ${{ secrets.MY_GITHUB_TOKEN }}" `
+          -H "Accept: application/vnd.github.v3+json" `
+          https://api.github.com/repos/${{ github.repository }}/dispatches `
           -d '{"event_type": "restart_stream"}'
