@@ -5,64 +5,38 @@ jobs:
   stream_desktop:
     runs-on: windows-latest
     steps:
-      - name: Disable Windows Defender for faster installs (Optional, but recommended for speed)
-        run: |
-          Set-MpPreference -DisableRealtimeMonitoring $true
-        shell: powershell
-
-      - name: Install Chocolatey Packages (Nginx, OBS Studio, FFmpeg, Ngrok)
+      - name: Install Chocolatey Packages
         run: |
           choco install nginx obs-studio ffmpeg ngrok -y --no-progress
-          # Install Virtual Audio Cable or similar for OBS audio loopback if needed
-          # choco install virtual-audio-cable -y # This often requires reboot, might not work well in GA
+        shell: powershell
 
       - name: Configure Nginx RTMP/HLS Server
         shell: powershell
         run: |
-          # Create Nginx config for RTMP and HLS
           $nginxConfPath = "C:\ProgramData\chocolatey\lib\nginx\tools\nginx.conf"
-          Set-Content -Path $nginxConfPath -Value @"
+          if (!(Test-Path "C:\temp\hls")) { New-Item -ItemType Directory -Path "C:\temp\hls" -Force }
+          $conf = @"
           worker_processes 1;
-
-          events {
-              worker_connections 1024;
-          }
-
+          events { worker_connections 1024; }
           rtmp {
               server {
-                  listen 1935; # RTMP port
-
+                  listen 1935;
                   application live {
                       live on;
-                      # Allow OBS to push here
-                      push rtmp://127.0.0.1:1935/hls; # Pushing to HLS output
-                  }
-
-                  application hls {
-                      live on;
                       hls on;
-                      hls_path C:/temp/hls; # Output HLS segments here
-                      hls_fragment 3s; # 3-second segments
-                      hls_playlist_length 10s; # Keep 10 seconds in playlist
-                      # Cleanup the HLS segments when stream ends
-                      hls_cleanup on;
-                      allow publish 127.0.0.1; # Only allow OBS from localhost to publish here
+                      hls_path C:/temp/hls;
+                      hls_fragment 3s;
+                      hls_playlist_length 10s;
                   }
               }
           }
-
           http {
-              include C:\ProgramData\chocolatey\lib\nginx\tools\conf\mime.types;
-              default_type application/octet-stream;
-
+              include mime.types;
               server {
-                  listen 80; # HTTP port for HLS
-                  server_name localhost;
-
+                  listen 80;
                   location /hls {
-                      # Serve HLS segments from the temp directory
                       root C:/temp;
-                      add_header Access-Control-Allow-Origin *; # Crucial for CORS in browser
+                      add_header Access-Control-Allow-Origin *;
                       types {
                           application/vnd.apple.mpegurl m3u8;
                           video/mp2t ts;
@@ -70,95 +44,50 @@ jobs:
                   }
               }
           }
-"@
+          "@
+          Set-Content -Path $nginxConfPath -Value $conf
 
-      - name: Start Nginx RTMP/HLS Server
+      - name: Start Nginx
         run: |
-          Start-Process C:\ProgramData\chocolatey\lib\nginx\tools\nginx.exe
+          cd C:\ProgramData\chocolatey\lib\nginx\tools\
+          Start-Process .\nginx.exe
         shell: powershell
 
-      - name: Prepare OBS Studio Settings
-        # This is the trickiest part. OBS needs to be configured programmatically.
-        # This will set up a scene to capture the primary display and push to RTMP.
-        # We need to find the correct path for OBS settings
-        # The exact path can vary, might need to be created if it doesn't exist.
-        # These are *sample* values; you'll need to confirm OBS's actual config structure.
-        shell: powershell
-        run: |
-          $obsConfigDir = "$env:APPDATA\obs-studio\basic\scenes"
-          New-Item -ItemType Directory -Path $obsConfigDir -Force
-
-          # A basic OBS scene JSON (this is simplified, real OBS settings are complex)
-          # You might need to generate a full OBS config by setting it up locally first,
-          # then copying the config files, and adapting them.
-          # Here, we're trying to inject a very basic configuration for a single scene and output.
-          # Full OBS config management via script is extremely difficult.
-          # For a more robust solution, you'd bake a custom OBS config into your repo.
-          Set-Content -Path "$obsConfigDir\Default.json" -Value @"
-          {
-              "name": "Default",
-              "sources": [
-                  {
-                      "name": "Display Capture",
-                      "type": "monitor_capture",
-                      "settings": {
-                          "monitor": 0,
-                          "show_cursor": true
-                      }
-                  },
-                  {
-                      "name": "Audio Input",
-                      "type": "wasapi_output_capture",
-                      "settings": {
-                          "device_id": "default" # Captures default desktop audio
-                      }
-                  }
-              ]
-          }
-"@
-          # Further OBS config for streaming output would be needed in global.ini or similar
-          # This is illustrative. OBS CLI for starting streaming is key.
-          # You'll need to set the RTMP server URL in OBS settings.
-          # This part might require a more advanced solution like a pre-configured OBS Portable.
-
-      - name: Start Ngrok Tunnel for HLS (HTTP port 80)
+      - name: Start Ngrok Tunnel
         shell: powershell
         env:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
           ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
-          Start-Process ngrok -ArgumentList "http 80" -PassThru -NoNewWindow
+          Start-Process ngrok -ArgumentList "http 80" -NoNewWindow
 
       - name: Get Ngrok HLS URL
         shell: powershell
-        id: ngrok_url_step # Assign an ID for output
+        id: ngrok_url_step
         run: |
-          Start-Sleep -Seconds 15 # Give ngrok a moment to start
-          $ngrok_url = (Invoke-RestMethod http://localhost:4040/api/tunnels).tunnels[0].public_url
+          Start-Sleep -Seconds 15
+          $tunnels = Invoke-RestMethod http://localhost:4040/api/tunnels
+          $public_url = $tunnels.tunnels[0].public_url
+          $full_hls_url = "${public_url}/hls/live.m3u8"
           Write-Host "----------------------------------------------------"
-          Write-Host "HLS STREAM URL: $ngrok_url/hls/live.m3u8"
+          Write-Host "HLS STREAM URL: $full_hls_url"
           Write-Host "----------------------------------------------------"
-          echo "HLS_URL=$ngrok_url/hls/live.m3u8" >> $env:GITHUB_OUTPUT
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "HLS_URL=$full_hls_url"
 
-      - name: Start OBS Studio for Streaming
-        # This is the command to launch OBS and start streaming.
-        # This assumes OBS is configured to stream to rtmp://127.0.0.1:1935/live
-        # And to capture the display and audio.
-        run: |
-          # The OBS CLI can be tricky. You might need to specify a profile.
-          # obs64.exe --startstreaming --profile "MyProfile" --scene "MyScene"
-          # For simplicity, we'll try to start OBS and assume it uses default settings
-          # that push to the local RTMP server.
-          Start-Process "C:\Program Files\obs-studio\bin\64bit\obs64.exe" -ArgumentList "--startstreaming"
+      - name: Start OBS Studio
         shell: powershell
+        run: |
+          # Note: OBS requires a scene. In a headless environment, 
+          # you may need to use 'obs-cli' or a pre-configured profile.
+          # This command starts OBS and attempts to stream.
+          Start-Process "C:\Program Files\obs-studio\bin\64bit\obs64.exe" -ArgumentList "--startstreaming", "--run-from-config"
 
       - name: Keep Alive (6 Hours)
         shell: powershell
         run: |
           $startTime = Get-Date
-          $hlsUrl = "${{ steps.ngrok_url_step.outputs.HLS_URL }}"
-          Write-Host "Streaming live to: $hlsUrl"
-          while ((Get-Date) -lt $startTime.AddHours(6)) {
-            Write-Host "Runner is active, streaming... $((Get-Date).ToString())"
+          $targetTime = $startTime.AddHours(6)
+          while ((Get-Date) -lt $targetTime) {
+            Write-Host "Runner active and streaming... $((Get-Date).ToString())"
             Start-Sleep -Seconds 60
           }
