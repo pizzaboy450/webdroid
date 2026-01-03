@@ -1,4 +1,4 @@
-name: Windows HD Stream (Unbreakable)
+name: Windows HD Stream (Final Fix)
 on: 
   workflow_dispatch:
   repository_dispatch:
@@ -15,48 +15,37 @@ jobs:
         with:
           token: ${{ secrets.MY_GITHUB_TOKEN }}
 
-      - name: Install Tools
-        run: |
-          choco install obs-studio ffmpeg vb-cable -y --skip-already-installed
+      - name: Install FFmpeg
+        run: choco install ffmpeg -y
         shell: powershell
 
-      - name: Setup HLS and OBS
+      - name: Start Streaming
         shell: powershell
         run: |
-          # 1. Create a clean folder for video files
-          if (Test-Path "stream") { Remove-Item -Recurse -Force "stream" }
-          New-Item -ItemType Directory -Path "stream" -Force
-
-          # 2. Configure OBS to save HLS files directly to the 'stream' folder
-          $obsSettingsDir = "$env:APPDATA\obs-studio\basic\profiles\Untitled"
-          if (!(Test-Path $obsSettingsDir)) { New-Item -ItemType Directory -Path $obsSettingsDir -Force }
+          # 1. Create the folder
+          if (!(Test-Path "live")) { New-Item -ItemType Directory -Path "live" }
           
-          # We tell OBS to use standard recording/output to our folder
-          $serviceJson = '{"settings":{"key":"","server":""},"type":"rtmp_custom"}'
-          Set-Content -Path "$obsSettingsDir\service.json" -Value $serviceJson
-          Write-Host "OBS Folders Prepared."
+          # 2. Start FFmpeg in the background to capture screen
+          # This captures the desktop and saves it as HLS segments
+          Start-Process ffmpeg -ArgumentList "-f gdigrab -framerate 30 -i desktop -c:v libx264 -preset ultrafast -tune zerolatency -g 60 -hls_time 2 -hls_list_size 5 -hls_flags delete_segments -f hls live/live.m3u8" -NoNewWindow
 
-      - name: Start OBS Studio
-        shell: powershell
-        run: |
-          # Launch OBS
-          Start-Process "C:\Program Files\obs-studio\bin\64bit\obs64.exe" -ArgumentList "--startstreaming"
-          Start-Sleep -Seconds 15
+          # 3. Give it a head start to create the first file
+          Start-Sleep -Seconds 10
 
-      - name: Sync Stream to GitHub (The "Tunnel" Replacement)
-        shell: powershell
-        run: |
+          # 4. The Sync Loop
           git config --global user.name "StreamBot"
           git config --global user.email "bot@github.com"
           
-          Write-Host "Starting sync loop... Video will be available on your GitHub Pages URL."
-          
-          # This loop pushes the video files to your repo every 20 seconds
           $timer = [diagnostics.stopwatch]::StartNew()
           while ($timer.Elapsed.TotalSeconds -lt 19800) {
-              git add stream/*.m3u8 stream/*.ts
-              git commit -m "Update Stream [skip ci]"
-              git push origin main
-              Write-Host "Video Chunk Pushed."
-              Start-Sleep -Seconds 20
+              # Check if files exist before adding
+              if (Test-Path "live/live.m3u8") {
+                  git add live/*.m3u8 live/*.ts
+                  git commit -m "Stream Update [skip ci]" --allow-empty
+                  git push origin main
+                  Write-Host "Video Pushed Successfully."
+              } else {
+                  Write-Host "Waiting for FFmpeg to generate files..."
+              }
+              Start-Sleep -Seconds 15
           }
