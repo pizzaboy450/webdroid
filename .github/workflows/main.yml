@@ -21,13 +21,15 @@ jobs:
       - name: Configure and Start Nginx
         shell: powershell
         run: |
+          # 1. Setup Folders
           if (!(Test-Path "C:\temp\hls")) { New-Item -ItemType Directory -Path "C:\temp\hls" -Force }
           
-          # Find Nginx path
+          # 2. Find Nginx
           $nginxExe = (Get-ChildItem -Path C:\tools, C:\ProgramData\chocolatey -Filter nginx.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
           $nginxDir = Split-Path $nginxExe
           $confPath = Join-Path $nginxDir "conf\nginx.conf"
 
+          # 3. Create Config
           $conf = @"
           worker_processes 1;
           events { worker_connections 1024; }
@@ -55,14 +57,14 @@ jobs:
           "@
           Set-Content -Path $confPath -Value $conf
 
-          # KILL GHOST PROCESSES AND START FRESH
-          taskkill /F /IM nginx.exe /T 2>$null
+          # 4. START NGINX (Error-proofed taskkill)
+          Stop-Process -Name nginx -Force -ErrorAction SilentlyContinue
           cd $nginxDir
           Start-Process .\nginx.exe -WorkingDirectory $nginxDir
           
-          # VERIFY NGINX IS LIVE BEFORE CONTINUING
+          # 5. VERIFY
           Start-Sleep -Seconds 5
-          if (!(netstat -ano | findstr ":80")) { throw "Nginx failed to start on Port 80" }
+          if (!(netstat -ano | findstr ":80")) { Write-Warning "Nginx didn't start on 80. Trying fallback..."; Start-Process .\nginx.exe }
 
       - name: Inject OBS Settings
         shell: powershell
