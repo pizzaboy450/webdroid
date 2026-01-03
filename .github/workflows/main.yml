@@ -1,19 +1,22 @@
-name: Windows HD Desktop Stream
-on: workflow_dispatch
+name: Windows HD Stream (Auto-Repeat)
+on: 
+  workflow_dispatch:
+  repository_dispatch:
+    types: [restart_stream]
 
 jobs:
   stream_desktop:
     runs-on: windows-latest
     steps:
-      - name: Install Chocolatey Packages
+      - name: Install Tools & Virtual Audio
         run: |
-          choco install nginx obs-studio ffmpeg ngrok -y --no-progress
+          choco install nginx obs-studio ffmpeg ngrok screencapturererecorder -y --no-progress
         shell: powershell
 
-      - name: Configure Nginx RTMP/HLS Server
+      - name: Configure Nginx
         shell: powershell
         run: |
-          $nginxConfPath = "C:\ProgramData\chocolatey\lib\nginx\tools\nginx.conf"
+          $nginxConfPath = "C:\tools\nginx-1.24.0\conf\nginx.conf" # Standard Choco path
           if (!(Test-Path "C:\temp\hls")) { New-Item -ItemType Directory -Path "C:\temp\hls" -Force }
           $conf = @"
           worker_processes 1;
@@ -26,21 +29,15 @@ jobs:
                       hls on;
                       hls_path C:/temp/hls;
                       hls_fragment 3s;
-                      hls_playlist_length 10s;
                   }
               }
           }
           http {
-              include mime.types;
               server {
                   listen 80;
                   location /hls {
                       root C:/temp;
                       add_header Access-Control-Allow-Origin *;
-                      types {
-                          application/vnd.apple.mpegurl m3u8;
-                          video/mp2t ts;
-                      }
                   }
               }
           }
@@ -48,46 +45,37 @@ jobs:
           Set-Content -Path $nginxConfPath -Value $conf
 
       - name: Start Nginx
+        shell: powershell
         run: |
-          cd C:\ProgramData\chocolatey\lib\nginx\tools\
+          $nginxPath = (Get-ChildItem -Path C:\ -Filter nginx.exe -Recurse | Select-Object -First 1).FullName
+          cd (Split-Path $nginxPath)
           Start-Process .\nginx.exe
-        shell: powershell
 
-      - name: Start Ngrok Tunnel
+      - name: Start Ngrok & Get URL
         shell: powershell
+        id: ngrok_step
         env:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
           ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
           Start-Process ngrok -ArgumentList "http 80" -NoNewWindow
-
-      - name: Get Ngrok HLS URL
-        shell: powershell
-        id: ngrok_url_step
-        run: |
-          Start-Sleep -Seconds 15
-          $tunnels = Invoke-RestMethod http://localhost:4040/api/tunnels
-          $public_url = $tunnels.tunnels[0].public_url
-          $full_hls_url = "${public_url}/hls/live.m3u8"
-          Write-Host "----------------------------------------------------"
-          Write-Host "HLS STREAM URL: $full_hls_url"
-          Write-Host "----------------------------------------------------"
-          Add-Content -Path $env:GITHUB_OUTPUT -Value "HLS_URL=$full_hls_url"
+          Start-Sleep -Seconds 10
+          $url = (Invoke-RestMethod http://localhost:4040/api/tunnels).tunnels[0].public_url
+          Write-Host "STREAM URL: $url/hls/live.m3u8"
 
       - name: Start OBS Studio
         shell: powershell
         run: |
-          # Note: OBS requires a scene. In a headless environment, 
-          # you may need to use 'obs-cli' or a pre-configured profile.
-          # This command starts OBS and attempts to stream.
-          Start-Process "C:\Program Files\obs-studio\bin\64bit\obs64.exe" -ArgumentList "--startstreaming", "--run-from-config"
+          Start-Process "C:\Program Files\obs-studio\bin\64bit\obs64.exe" -ArgumentList "--startstreaming"
 
-      - name: Keep Alive (6 Hours)
+      - name: Run for 5.5 Hours
         shell: powershell
+        run: Start-Sleep -Seconds 19800 # 5.5 hours
+
+      - name: Trigger Next Run
+        if: always()
         run: |
-          $startTime = Get-Date
-          $targetTime = $startTime.AddHours(6)
-          while ((Get-Date) -lt $targetTime) {
-            Write-Host "Runner active and streaming... $((Get-Date).ToString())"
-            Start-Sleep -Seconds 60
-          }
+          curl -X POST -H "Authorization: token ${{ secrets.MY_GITHUB_TOKEN }}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/repos/${{ github.repository }}/dispatches \
+          -d '{"event_type": "restart_stream"}'
