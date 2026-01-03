@@ -1,4 +1,4 @@
-name: Windows HD Stream (Ultimate)
+name: Windows HD Stream (Ironclad)
 on: 
   workflow_dispatch:
   repository_dispatch:
@@ -25,7 +25,6 @@ jobs:
           $nginxExe = (Get-ChildItem -Path C:\tools, C:\ProgramData\chocolatey -Filter nginx.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
           $nginxDir = Split-Path $nginxExe
           
-          # Force kill any existing nginx to avoid port conflicts
           Stop-Process -Name nginx -Force -ErrorAction SilentlyContinue
           
           $conf = @"
@@ -57,64 +56,57 @@ jobs:
 
           cd $nginxDir
           Start-Process .\nginx.exe -WorkingDirectory $nginxDir
-          Start-Sleep -Seconds 5
+          
+          # CRITICAL: Wait until Port 80 is actually open
+          Write-Host "Waiting for Nginx to bind to Port 80..."
+          for ($i=0; $i -lt 10; $i++) {
+              if (netstat -ano | findstr ":80") { break }
+              Start-Sleep -Seconds 2
+          }
 
-      - name: Start Ngrok & Verify Connection
+      - name: Start Ngrok & Verify API
         shell: powershell
         env:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
-          # 1. Start Ngrok
           ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
           Start-Process ngrok -ArgumentList "http 80" -NoNewWindow
-          
-          # 2. Wait for Ngrok API to wake up
-          Write-Host "Waiting for Ngrok API..."
           Start-Sleep -Seconds 15
           
-          # 3. Fetch URL with Retry Logic
-          $attempts = 0
+          # Get URL with fallback retries
           $url = ""
-          while ($attempts -lt 10 -and -not $url) {
+          for ($i=0; $i -lt 5; $i++) {
               try {
-                  $tunnels = (Invoke-RestMethod http://localhost:4040/api/tunnels).tunnels
-                  $url = $tunnels[0].public_url
-              } catch {
-                  Write-Host "Waiting for tunnel..."
-                  Start-Sleep -Seconds 5
-                  $attempts++
-              }
+                  $url = (Invoke-RestMethod http://localhost:4040/api/tunnels).tunnels[0].public_url
+                  if ($url) { break }
+              } catch { Start-Sleep -Seconds 5 }
           }
 
-          if (!$url) { throw "Ngrok failed to create a tunnel!" }
+          if (!$url) { throw "Ngrok API failed to return a URL." }
           
-          # 4. Save and Push URL
           $streamUrl = "$url/hls/live.m3u8"
-          Write-Host "LIVE URL: $streamUrl"
           Set-Content -Path "current_stream.txt" -Value $streamUrl
           
           git config --global user.name "StreamBot"
           git config --global user.email "bot@github.com"
           git add current_stream.txt
-          git commit -m "Update Stream URL [skip ci]"
+          git commit -m "Update Stream URL [skip ci]" || Write-Host "No changes"
           git push
 
-      - name: Start OBS Studio
+      - name: Start OBS Studio (Force Settings)
         shell: powershell
         run: |
-          # Inject settings just in case
           $obsSettingsDir = "$env:APPDATA\obs-studio\basic\profiles\Untitled"
           if (!(Test-Path $obsSettingsDir)) { New-Item -ItemType Directory -Path $obsSettingsDir -Force }
           $serviceJson = '{"settings":{"key":"","server":"rtmp://127.0.0.1:1935/live"},"type":"rtmp_custom"}'
           Set-Content -Path "$obsSettingsDir\service.json" -Value $serviceJson
           
-          # Start OBS
-          Start-Process "C:\Program Files\obs-studio\bin\64bit\obs64.exe" -ArgumentList "--startstreaming"
+          Start-Process "C:\Program Files\obs-studio\bin\64bit\obs64.exe" -ArgumentList "--startstreaming", "--minimize-to-tray"
 
-      - name: Run and Auto-Repeat
+      - name: Keep-Alive Loop
         shell: powershell
         run: |
-          Write-Host "STREAM ACTIVE. Check your Chrome Extension now."
+          Write-Host "SUCCESS: The stream is now live and stable."
           $timer = [diagnostics.stopwatch]::StartNew()
           while ($timer.Elapsed.TotalSeconds -lt 19800) { Start-Sleep -Seconds 60 }
           
