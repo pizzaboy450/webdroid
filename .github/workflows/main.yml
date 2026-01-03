@@ -24,8 +24,11 @@ jobs:
           # 1. Setup HLS Folder
           if (!(Test-Path "C:\temp\hls")) { New-Item -ItemType Directory -Path "C:\temp\hls" -Force }
 
-          # 2. Find Nginx Path
-          $nginxExe = (Get-ChildItem -Path C:\ -Filter nginx.exe -Recurse | Select-Object -First 1).FullName
+          # 2. Find Nginx Path (Optimized to avoid Permission Denied errors)
+          Write-Host "Searching for Nginx..."
+          $nginxExe = (Get-ChildItem -Path C:\tools -Filter nginx.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          if (!$nginxExe) { $nginxExe = (Get-ChildItem -Path "C:\ProgramData\chocolatey" -Filter nginx.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName }
+          
           $nginxDir = Split-Path $nginxExe
           $confPath = Join-Path $nginxDir "conf\nginx.conf"
 
@@ -57,14 +60,13 @@ jobs:
           "@
           Set-Content -Path $confPath -Value $conf
 
-          # 4. START DETACHED (This fixes the hanging issue in your screenshot)
-          # Start-Job creates an isolated background worker
+          # 4. START DETACHED
           Start-Job -ScriptBlock {
               param($dir)
               cd $dir
               .\nginx.exe
           } -ArgumentList $nginxDir
-          Write-Host "Nginx is now running in a detached background job."
+          Write-Host "Nginx started in background from $nginxDir"
 
       - name: Inject OBS Settings
         shell: powershell
@@ -73,7 +75,6 @@ jobs:
           if (!(Test-Path $obsSettingsDir)) { New-Item -ItemType Directory -Path $obsSettingsDir -Force }
           $serviceJson = '{"settings":{"key":"","server":"rtmp://127.0.0.1:1935/live"},"type":"rtmp_custom"}'
           Set-Content -Path "$obsSettingsDir\service.json" -Value $serviceJson
-          Write-Host "OBS settings injected."
 
       - name: Start Ngrok & Save URL
         shell: powershell
@@ -97,14 +98,12 @@ jobs:
       - name: Start OBS Studio
         shell: powershell
         run: |
-          # Start streaming immediately on launch
           Start-Process "C:\Program Files\obs-studio\bin\64bit\obs64.exe" -ArgumentList "--startstreaming"
-          Write-Host "OBS launched and streaming."
 
       - name: Run and Auto-Repeat
         shell: powershell
         run: |
-          Write-Host "Streaming live... Restarting in 5.5 hours."
+          Write-Host "Streaming live. Auto-restart in 5.5 hours."
           $timer = [diagnostics.stopwatch]::StartNew()
           while ($timer.Elapsed.TotalSeconds -lt 19800) {
               Start-Sleep -Seconds 60
