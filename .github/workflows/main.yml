@@ -1,409 +1,164 @@
-name: VNC with MuMu Player
-
-on:
-  workflow_dispatch:
+name: Windows HD Desktop Stream
+on: workflow_dispatch
 
 jobs:
-  vnc-setup:
+  stream_desktop:
     runs-on: windows-latest
-    timeout-minutes: 3600
-    
     steps:
-      - name: Create VNC User with Secure Password
+      - name: Disable Windows Defender for faster installs (Optional, but recommended for speed)
         run: |
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)
-              Lower   = [char[]](97..122)
-              Number  = [char[]](48..57)
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126))
-          }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "VNCUser" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "VNCUser"
-          
-          echo "VNC_PASSWORD=$password" >> $env:GITHUB_ENV
-          
-          if (-not (Get-LocalUser -Name "VNCUser")) {
-              Write-Error "User creation failed"
-              exit 1
+          Set-MpPreference -DisableRealtimeMonitoring $true
+        shell: powershell
+
+      - name: Install Chocolatey Packages (Nginx, OBS Studio, FFmpeg, Ngrok)
+        run: |
+          choco install nginx obs-studio ffmpeg ngrok -y --no-progress
+          # Install Virtual Audio Cable or similar for OBS audio loopback if needed
+          # choco install virtual-audio-cable -y # This often requires reboot, might not work well in GA
+
+      - name: Configure Nginx RTMP/HLS Server
+        shell: powershell
+        run: |
+          # Create Nginx config for RTMP and HLS
+          $nginxConfPath = "C:\ProgramData\chocolatey\lib\nginx\tools\nginx.conf"
+          Set-Content -Path $nginxConfPath -Value @"
+          worker_processes 1;
+
+          events {
+              worker_connections 1024;
           }
 
-      - name: Install Chocolatey
-        run: |
-          Set-ExecutionPolicy Bypass -Scope Process -Force
-          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-          iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+          rtmp {
+              server {
+                  listen 1935; # RTMP port
 
-      - name: Install Python and Dependencies
-        run: |
-          choco install python -y --version=3.11.0
-          refreshenv
-          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-          
-          Write-Host "Installing websockify and numpy..."
-          python -m pip install --upgrade pip
-          python -m pip install websockify numpy
-          
-          # Verify installation
-          python --version
-          python -m pip show websockify
+                  application live {
+                      live on;
+                      # Allow OBS to push here
+                      push rtmp://127.0.0.1:1935/hls; # Pushing to HLS output
+                  }
 
-      - name: Install TightVNC Server
-        run: |
-          $vncUrl = "https://www.tightvnc.com/download/2.8.84/tightvnc-2.8.84-gpl-setup-64bit.msi"
-          $installerPath = "$env:TEMP\tightvnc.msi"
-          
-          Write-Host "Downloading TightVNC..."
-          Invoke-WebRequest -Uri $vncUrl -OutFile $installerPath
-          
-          Write-Host "Installing TightVNC..."
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", `
-            "/quiet", "/norestart", `
-            "ADDLOCAL=Server", `
-            "SERVER_REGISTER_AS_SERVICE=1", `
-            "SERVER_ADD_FIREWALL_EXCEPTION=1", `
-            "SET_USEVNCAUTHENTICATION=1", `
-            "VALUE_OF_USEVNCAUTHENTICATION=1" -Wait
-          
-          Remove-Item $installerPath -Force
-          Start-Sleep -Seconds 5
-
-      - name: Configure VNC Server
-        run: |
-          $vncPasswd = $env:VNC_PASSWORD
-          
-          Stop-Service -Name "tvnserver" -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 2
-          
-          $regPath = "HKLM:\SOFTWARE\TightVNC\Server"
-          Set-ItemProperty -Path $regPath -Name "UseVncAuthentication" -Value 1 -Force
-          Set-ItemProperty -Path $regPath -Name "AllowLoopback" -Value 1 -Force
-          Set-ItemProperty -Path $regPath -Name "LoopbackOnly" -Value 0 -Force
-          Set-ItemProperty -Path $regPath -Name "AcceptRfbConnections" -Value 1 -Force
-          
-          & "C:\Program Files\TightVNC\tvnserver.exe" -silent -controlservice -shareall
-          & "C:\Program Files\TightVNC\tvnserver.exe" -silent -controlservice -shareprimary
-          & "C:\Program Files\TightVNC\tvnserver.exe" -silent -set AdminPasswordPlain="$vncPasswd"
-          & "C:\Program Files\TightVNC\tvnserver.exe" -silent -set ControlPassword="$vncPasswd"
-          
-          Start-Service -Name "tvnserver"
-          Start-Sleep -Seconds 3
-          
-          $service = Get-Service -Name "tvnserver"
-          if ($service.Status -ne "Running") {
-              Write-Error "VNC Server failed to start"
-              exit 1
+                  application hls {
+                      live on;
+                      hls on;
+                      hls_path C:/temp/hls; # Output HLS segments here
+                      hls_fragment 3s; # 3-second segments
+                      hls_playlist_length 10s; # Keep 10 seconds in playlist
+                      # Cleanup the HLS segments when stream ends
+                      hls_cleanup on;
+                      allow publish 127.0.0.1; # Only allow OBS from localhost to publish here
+                  }
+              }
           }
-          
-          Write-Host "✓ VNC Server configured and running on port 5900"
 
-      - name: Configure Firewall for VNC and WebSocket
-        run: |
-          # Remove existing rules
-          netsh advfirewall firewall delete rule name="VNC-Tailscale" 2>$null
-          netsh advfirewall firewall delete rule name="Websockify-Tailscale" 2>$null
-          
-          # Allow VNC port 5900
-          netsh advfirewall firewall add rule name="VNC-Tailscale" `
-            dir=in action=allow protocol=TCP localport=5900
-          
-          # Allow WebSocket port 6080
-          netsh advfirewall firewall add rule name="Websockify-Tailscale" `
-            dir=in action=allow protocol=TCP localport=6080
-          
-          Write-Host "✓ Firewall configured for VNC (5900) and WebSocket (6080)"
+          http {
+              include C:\ProgramData\chocolatey\lib\nginx\tools\conf\mime.types;
+              default_type application/octet-stream;
 
-      - name: Start Websockify Proxy
-        run: |
-          Write-Host "Starting websockify proxy..."
-          
-          # Create a startup script for websockify
-          $scriptContent = @"
-import sys
-import os
+              server {
+                  listen 80; # HTTP port for HLS
+                  server_name localhost;
 
-# Add Python Scripts to PATH
-scripts_path = r'C:\Python311\Scripts'
-if scripts_path not in os.environ['PATH']:
-    os.environ['PATH'] = scripts_path + os.pathsep + os.environ['PATH']
-
-# Now run websockify
-from websockify import websockifyserver
-
-websockifyserver.websockify_init()
+                  location /hls {
+                      # Serve HLS segments from the temp directory
+                      root C:/temp;
+                      add_header Access-Control-Allow-Origin *; # Crucial for CORS in browser
+                      types {
+                          application/vnd.apple.mpegurl m3u8;
+                          video/mp2t ts;
+                      }
+                  }
+              }
+          }
 "@
-          
-          $scriptPath = "$env:TEMP\start_websockify.py"
-          $scriptContent | Out-File -FilePath $scriptPath -Encoding UTF8
-          
-          # Start websockify as background process
-          $websockifyCmd = "python -m websockify --web=. 0.0.0.0:6080 localhost:5900"
-          
-          Start-Process powershell -ArgumentList "-NoExit", "-Command", $websockifyCmd -WindowStyle Hidden
-          
-          Start-Sleep -Seconds 5
-          
-          # Verify websockify is running
-          $wsProcess = Get-Process python -ErrorAction SilentlyContinue | Where-Object {
-              $_.CommandLine -like "*websockify*"
-          }
-          
-          if ($wsProcess) {
-              Write-Host "✓ Websockify proxy started successfully on port 6080"
-          } else {
-              Write-Warning "⚠ Could not verify websockify process, but continuing..."
-          }
-          
-          # Test local connection
-          Start-Sleep -Seconds 2
-          try {
-              $test = Test-NetConnection -ComputerName localhost -Port 6080 -WarningAction SilentlyContinue
-              if ($test.TcpTestSucceeded) {
-                  Write-Host "✓ WebSocket proxy is accessible on port 6080"
-              }
-          } catch {
-              Write-Host "WebSocket test inconclusive, will verify via Tailscale"
-          }
 
-      - name: Download MuMu Player
+      - name: Start Nginx RTMP/HLS Server
         run: |
-          $installerPath = "$env:TEMP\MuMuInstaller.exe"
-          
-          Write-Host "Downloading MuMu Player..."
-          
-          $sources = @(
-              "https://mumu.cae5df2a.c3p0.dianlianyule.com/MuMuPlayer-12.0.exe",
-              "https://dl-sh-mumu-static.mumu.163.com/installer/MuMuPlayer-12.0.exe",
-              "https://mumu.163.com/baidu/MuMuInstaller.exe"
-          )
-          
-          $downloaded = $false
-          foreach ($url in $sources) {
-              try {
-                  Write-Host "Trying: $url"
-                  Invoke-WebRequest -Uri $url -OutFile $installerPath -UserAgent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -TimeoutSec 60
-                  if ((Test-Path $installerPath) -and ((Get-Item $installerPath).Length -gt 1MB)) {
-                      $fileSize = (Get-Item $installerPath).Length / 1MB
-                      Write-Host "Successfully downloaded MuMu Player: $([math]::Round($fileSize, 2)) MB"
-                      $downloaded = $true
-                      break
+          Start-Process C:\ProgramData\chocolatey\lib\nginx\tools\nginx.exe
+        shell: powershell
+
+      - name: Prepare OBS Studio Settings
+        # This is the trickiest part. OBS needs to be configured programmatically.
+        # This will set up a scene to capture the primary display and push to RTMP.
+        # We need to find the correct path for OBS settings
+        # The exact path can vary, might need to be created if it doesn't exist.
+        # These are *sample* values; you'll need to confirm OBS's actual config structure.
+        shell: powershell
+        run: |
+          $obsConfigDir = "$env:APPDATA\obs-studio\basic\scenes"
+          New-Item -ItemType Directory -Path $obsConfigDir -Force
+
+          # A basic OBS scene JSON (this is simplified, real OBS settings are complex)
+          # You might need to generate a full OBS config by setting it up locally first,
+          # then copying the config files, and adapting them.
+          # Here, we're trying to inject a very basic configuration for a single scene and output.
+          # Full OBS config management via script is extremely difficult.
+          # For a more robust solution, you'd bake a custom OBS config into your repo.
+          Set-Content -Path "$obsConfigDir\Default.json" -Value @"
+          {
+              "name": "Default",
+              "sources": [
+                  {
+                      "name": "Display Capture",
+                      "type": "monitor_capture",
+                      "settings": {
+                          "monitor": 0,
+                          "show_cursor": true
+                      }
+                  },
+                  {
+                      "name": "Audio Input",
+                      "type": "wasapi_output_capture",
+                      "settings": {
+                          "device_id": "default" # Captures default desktop audio
+                      }
                   }
-              } catch {
-                  Write-Host "Failed: $_"
-                  if (Test-Path $installerPath) { Remove-Item $installerPath -Force }
-              }
+              ]
           }
-          
-          if (-not $downloaded) {
-              Write-Host "All download sources failed. Attempting to download via official website..."
-              try {
-                  $response = Invoke-WebRequest -Uri "https://mumu.163.com/" -UserAgent "Mozilla/5.0" -MaximumRedirection 5
-                  $downloadLink = ($response.Links | Where-Object { $_.href -like "*.exe" -or $_.href -like "*download*" } | Select-Object -First 1).href
-                  if ($downloadLink) {
-                      Write-Host "Found download link: $downloadLink"
-                      Invoke-WebRequest -Uri $downloadLink -OutFile $installerPath -UserAgent "Mozilla/5.0"
-                      $downloaded = $true
-                  }
-              } catch {
-                  Write-Warning "Could not find download link from official website"
-              }
-          }
-          
-          if ($downloaded -and (Test-Path $installerPath)) {
-              echo "MUMU_INSTALLER=$installerPath" >> $env:GITHUB_ENV
-          } else {
-              Write-Warning "Failed to download MuMu Player automatically"
-              Write-Host "You can manually install it after connecting via VNC"
-              Write-Host "Download from: https://mumu.163.com/"
-              echo "MUMU_INSTALLER=" >> $env:GITHUB_ENV
-          }
+"@
+          # Further OBS config for streaming output would be needed in global.ini or similar
+          # This is illustrative. OBS CLI for starting streaming is key.
+          # You'll need to set the RTMP server URL in OBS settings.
+          # This part might require a more advanced solution like a pre-configured OBS Portable.
 
-      - name: Install MuMu Player
+      - name: Start Ngrok Tunnel for HLS (HTTP port 80)
+        shell: powershell
+        env:
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
-          $installerPath = $env:MUMU_INSTALLER
-          
-          if (-not $installerPath -or -not (Test-Path $installerPath)) {
-              Write-Host "═══════════════════════════════════════════════"
-              Write-Host "MuMu Player download was unsuccessful"
-              Write-Host "You can install it manually after VNC connection:"
-              Write-Host "1. Open browser in VNC session"
-              Write-Host "2. Visit: https://mumu.163.com/"
-              Write-Host "3. Download and run installer"
-              Write-Host "═══════════════════════════════════════════════"
-              echo "MUMU_INSTALLED=false" >> $env:GITHUB_ENV
-              return
-          }
-          
-          Write-Host "Installing MuMu Player (this may take 5-10 minutes)..."
-          
-          $installArgs = @("/S")
-          
-          $process = Start-Process -FilePath $installerPath -ArgumentList $installArgs -Wait -PassThru -NoNewWindow
-          
-          Write-Host "Installation process exited with code: $($process.ExitCode)"
-          Start-Sleep -Seconds 15
-          
-          $possiblePaths = @(
-              "C:\Program Files\MuMuPlayer-12.0",
-              "C:\Program Files (x86)\MuMuPlayer-12.0",
-              "$env:LOCALAPPDATA\MuMuPlayer-12.0",
-              "$env:ProgramFiles\Netease\MuMuPlayer-12.0",
-              "C:\Program Files\Netease\MuMu Player 12"
-          )
-          
-          $installed = $false
-          foreach ($path in $possiblePaths) {
-              if (Test-Path $path) {
-                  Write-Host "✓ MuMu Player found at: $path"
-                  $installed = $true
-                  break
-              }
-          }
-          
-          if ($installed) {
-              Write-Host "✓ MuMu Player installed successfully"
-              echo "MUMU_INSTALLED=true" >> $env:GITHUB_ENV
-          } else {
-              Write-Host "⚠ MuMu Player installation path not verified"
-              Write-Host "  Installation may have completed to non-standard location"
-              Write-Host "  Check Desktop or Start Menu after VNC connection"
-              echo "MUMU_INSTALLED=unknown" >> $env:GITHUB_ENV
-          }
-          
-          Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+          ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
+          Start-Process ngrok -ArgumentList "http 80" -PassThru -NoNewWindow
 
-      - name: Install Tailscale
+      - name: Get Ngrok HLS URL
+        shell: powershell
+        id: ngrok_url_step # Assign an ID for output
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          
-          Write-Host "Downloading Tailscale..."
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          
-          Write-Host "Installing Tailscale..."
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
-          
-          Start-Sleep -Seconds 5
+          Start-Sleep -Seconds 15 # Give ngrok a moment to start
+          $ngrok_url = (Invoke-RestMethod http://localhost:4040/api/tunnels).tunnels[0].public_url
+          Write-Host "----------------------------------------------------"
+          Write-Host "HLS STREAM URL: $ngrok_url/hls/live.m3u8"
+          Write-Host "----------------------------------------------------"
+          echo "HLS_URL=$ngrok_url/hls/live.m3u8" >> $env:GITHUB_OUTPUT
 
-      - name: Establish Tailscale Connection
+      - name: Start OBS Studio for Streaming
+        # This is the command to launch OBS and start streaming.
+        # This assumes OBS is configured to stream to rtmp://127.0.0.1:1935/live
+        # And to capture the display and audio.
         run: |
-          Write-Host "Connecting to Tailscale..."
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-vnc-$env:GITHUB_RUN_ID
-          
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 15) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              if ($tsIP) { break }
-              Write-Host "Waiting for Tailscale IP... (attempt $($retries + 1))"
-              Start-Sleep -Seconds 5
-              $retries++
-          }
-          
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
-              exit 1
-          }
-          
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-          Write-Host "✓ Tailscale IP assigned: $tsIP"
+          # The OBS CLI can be tricky. You might need to specify a profile.
+          # obs64.exe --startstreaming --profile "MyProfile" --scene "MyScene"
+          # For simplicity, we'll try to start OBS and assume it uses default settings
+          # that push to the local RTMP server.
+          Start-Process "C:\Program Files\obs-studio\bin\64bit\obs64.exe" -ArgumentList "--startstreaming"
+        shell: powershell
 
-      - name: Verify Connectivity
+      - name: Keep Alive (6 Hours)
+        shell: powershell
         run: |
-          Write-Host "`nTesting connectivity..."
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          
-          # Test VNC port
-          $vncTest = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 5900 -WarningAction SilentlyContinue
-          if ($vncTest.TcpTestSucceeded) {
-              Write-Host "✓ VNC port 5900 is accessible"
-          } else {
-              Write-Warning "⚠ VNC port test failed (may work from Tailscale network)"
-          }
-          
-          # Test WebSocket port
-          $wsTest = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 6080 -WarningAction SilentlyContinue
-          if ($wsTest.TcpTestSucceeded) {
-              Write-Host "✓ WebSocket port 6080 is accessible"
-          } else {
-              Write-Warning "⚠ WebSocket port test failed (may work from Tailscale network)"
-          }
-
-      - name: Display Connection Information
-        run: |
-          $mumuStatus = if ($env:MUMU_INSTALLED -eq "true") { "✓ Installed" } 
-                       elseif ($env:MUMU_INSTALLED -eq "false") { "⚠ Install Manually" }
-                       else { "? Check After Connect" }
-          
-          Write-Host "`n╔════════════════════════════════════════════════════════╗"
-          Write-Host "║         VNC WEB CLIENT CONNECTION INFO                ║"
-          Write-Host "╠════════════════════════════════════════════════════════╣"
-          Write-Host "║                                                        ║"
-          Write-Host "║  🌐 WEB BROWSER ACCESS (Recommended):                 ║"
-          Write-Host "║  ----------------------------------------               ║"
-          Write-Host "║  1. Make sure Tailscale is running on your device     ║"
-          Write-Host "║  2. Open the HTML page you downloaded                 ║"
-          Write-Host "║  3. Enter these details:                              ║"
-          Write-Host "║                                                        ║"
-          Write-Host "║     IP Address: $env:TAILSCALE_IP                    "
-          Write-Host "║     Port: 6080                                        ║"
-          Write-Host "║     Password: $env:VNC_PASSWORD                      "
-          Write-Host "║                                                        ║"
-          Write-Host "║  🖥️ DESKTOP VNC CLIENT (Alternative):                 ║"
-          Write-Host "║  ----------------------------------------               ║"
-          Write-Host "║  Connect to: $env:TAILSCALE_IP:5900                  "
-          Write-Host "║  Password: $env:VNC_PASSWORD                         "
-          Write-Host "║                                                        ║"
-          Write-Host "║  📱 MuMu Player Status: $mumuStatus                  "
-          Write-Host "║                                                        ║"
-          Write-Host "╚════════════════════════════════════════════════════════╝`n"
-          
-          if ($env:MUMU_INSTALLED -eq "false") {
-              Write-Host "⚠ Manual MuMu Installation Required:"
-              Write-Host "  - Browse to https://mumu.163.com/ in VNC session"
-              Write-Host "  - Download and install MuMu Player`n"
-          }
-          
-          Write-Host "🔗 Quick Access URLs:"
-          Write-Host "  Web VNC: Use your local HTML file with IP above"
-          Write-Host "  Desktop VNC: vnc://$env:TAILSCALE_IP:5900`n"
-
-      - name: Maintain Connection
-        run: |
-          Write-Host "Session active. Connection will remain open..."
-          Write-Host "Use 'Cancel workflow' button to terminate.`n"
-          
-          $counter = 0
-          while ($true) {
-              $counter++
-              $runtime = [math]::Round($counter * 5 / 60, 1)
-              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] VNC Active | Runtime: $runtime min | Web: $env:TAILSCALE_IP:6080"
-              
-              # Periodic service checks
-              if ($counter % 12 -eq 0) {
-                  $vncService = Get-Service -Name "tvnserver" -ErrorAction SilentlyContinue
-                  if ($vncService.Status -ne "Running") {
-                      Write-Warning "VNC service stopped, restarting..."
-                      Start-Service -Name "tvnserver"
-                  }
-                  
-                  $wsProcess = Get-Process python -ErrorAction SilentlyContinue | Where-Object {
-                      $_.CommandLine -like "*websockify*"
-                  }
-                  if (-not $wsProcess) {
-                      Write-Warning "Websockify stopped, restarting..."
-                      Start-Process powershell -ArgumentList "-NoExit", "-Command", "python -m websockify --web=. 0.0.0.0:6080 localhost:5900" -WindowStyle Hidden
-                  }
-              }
-              
-              Start-Sleep -Seconds 300
+          $startTime = Get-Date
+          $hlsUrl = "${{ steps.ngrok_url_step.outputs.HLS_URL }}"
+          Write-Host "Streaming live to: $hlsUrl"
+          while ((Get-Date) -lt $startTime.AddHours(6)) {
+            Write-Host "Runner is active, streaming... $((Get-Date).ToString())"
+            Start-Sleep -Seconds 60
           }
