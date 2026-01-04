@@ -1,22 +1,52 @@
-- name: Start Cloudflare Tunnel & Update Gist
+name: Android Cloud Stream
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */5 * * *'
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Android & noVNC
+        run: |
+          docker run -d -p 6080:80 --privileged redroid/redroid:11.0.0-latest
+          # Give Android time to initialize
+          sleep 30
+
+      - name: Start Cloudflare Tunnel
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
           GIST_ID: ${{ secrets.GIST_ID }}
         run: |
-          # 1. Download and setup Cloudflare Tunnel client
+          # 1. Install Cloudflare
           wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
           chmod +x cloudflared
           
-          # 2. Start the tunnel in the background pointing to your web viewer
+          # 2. Run tunnel in background
           ./cloudflared tunnel --url http://localhost:6080 --no-autoupdate > tunnel.log 2>&1 &
-          
-          # 3. Wait for the URL to be generated and extract it
           sleep 20
+          
+          # 3. Extract the URL
           TUNNEL_URL=$(grep -o 'https://.*\.trycloudflare\.com' tunnel.log | head -n 1)
-          echo "Your Android Cloud is at: $TUNNEL_URL"
-
-          # 4. Push the new URL to your GitHub Gist for the Extension
+          echo "Tunnel URL: $TUNNEL_URL"
+          
+          # 4. Update Gist so Extension can find it
           curl -X PATCH -H "Authorization: token $GH_PAT" \
                -H "Content-Type: application/json" \
                -d "{\"files\":{\"android_url.txt\":{\"content\":\"$TUNNEL_URL\"}}}" \
                https://api.github.com/gists/$GIST_ID
+
+      - name: Keep Alive & Auto-Restart
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          # Sleep for 5 hours (18000 seconds) then trigger next run
+          sleep 18000
+          curl -X POST -H "Authorization: token $GH_PAT" \
+               -H "Accept: application/vnd.github.v3+json" \
+               https://api.github.com/repos/${{ github.repository }}/actions/workflows/main.yml/dispatches \
+               -d '{"ref":"main"}'
