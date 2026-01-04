@@ -11,21 +11,27 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Install ADB
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y adb
+
       - name: Launch Android Container
         run: |
-          # Start Redroid with higher privileges for networking
-          docker run -d -p 6080:80 -p 5555:5555 --privileged redroid/redroid:11.0.0-latest
-          echo "Waiting for Android to boot..."
+          # Start Redroid with higher privileges
+          docker run -d -p 6080:80 -p 5555:5555 --name redroid --privileged redroid/redroid:11.0.0-latest
+          echo "Waiting for Android to boot (60s)..."
           sleep 60
 
       - name: Connect ADB and Start Streamer
         run: |
           # Connect the local ADB to the running container
           adb connect localhost:5555
+          sleep 5
           # Force the screen to stay on and unlock
-          adb shell wm dismiss-keyguard
-          # Start scrcpy inside the web-desktop environment
-          docker exec -d $(docker ps -qf "name=redroid") sh -c "scrcpy --always-on-top --initial-bit-rate=2M" &
+          adb -s localhost:5555 shell wm dismiss-keyguard || echo "Screen already unlocked"
+          # Ensure scrcpy is ready in the background
+          docker exec -d redroid sh -c "scrcpy --always-on-top --initial-bit-rate=2M" || echo "Scrcpy start issued"
           sleep 5
 
       - name: Start Cloudflare Tunnel & Update Gist
@@ -39,25 +45,30 @@ jobs:
           
           # 2. Run tunnel in background
           ./cloudflared tunnel --url http://localhost:6080 --no-autoupdate > tunnel.log 2>&1 &
-          sleep 20
+          sleep 25
           
           # 3. Extract the URL
           TUNNEL_URL=$(grep -o 'https://.*\.trycloudflare\.com' tunnel.log | head -n 1)
-          echo "Your URL: $TUNNEL_URL"
+          echo "Your URL is: $TUNNEL_URL"
           
           # 4. Update YOUR specific Gist file (gistfile1.txt)
-          curl -X PATCH -H "Authorization: token $GH_PAT" \
-               -H "Content-Type: application/json" \
-               -d "{\"files\":{\"gistfile1.txt\":{\"content\":\"$TUNNEL_URL\"}}}" \
-               https://api.github.com/gists/$GIST_ID
+          if [ -n "$TUNNEL_URL" ]; then
+            curl -X PATCH -H "Authorization: token $GH_PAT" \
+                 -H "Content-Type: application/json" \
+                 -d "{\"files\":{\"gistfile1.txt\":{\"content\":\"$TUNNEL_URL\"}}}" \
+                 https://api.github.com/gists/$GIST_ID
+          else
+            echo "Error: Tunnel URL not found in logs"
+            exit 1
+          fi
 
       - name: Recursive Keep-Alive
         if: always()
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          # Wait 5.5 hours then trigger a fresh run
-          sleep 19800
+          # Sleep for 5 hours and 15 mins then trigger next run
+          sleep 18900
           curl -X POST -H "Authorization: token $GH_PAT" \
                -H "Accept: application/vnd.github.v3+json" \
                https://api.github.com/repos/${{ github.repository }}/actions/workflows/main.yml/dispatches \
