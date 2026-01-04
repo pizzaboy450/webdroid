@@ -11,18 +11,29 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Android & noVNC
+      - name: Launch Android Container
         run: |
-          docker run -d -p 6080:80 --privileged redroid/redroid:11.0.0-latest
-          # Give Android time to initialize
-          sleep 30
+          # Start Redroid with higher privileges for networking
+          docker run -d -p 6080:80 -p 5555:5555 --privileged redroid/redroid:11.0.0-latest
+          echo "Waiting for Android to boot..."
+          sleep 60
 
-      - name: Start Cloudflare Tunnel
+      - name: Connect ADB and Start Streamer
+        run: |
+          # Connect the local ADB to the running container
+          adb connect localhost:5555
+          # Force the screen to stay on and unlock
+          adb shell wm dismiss-keyguard
+          # Start scrcpy inside the web-desktop environment
+          docker exec -d $(docker ps -qf "name=redroid") sh -c "scrcpy --always-on-top --initial-bit-rate=2M" &
+          sleep 5
+
+      - name: Start Cloudflare Tunnel & Update Gist
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
-          GIST_ID: ${{ secrets.GIST_ID }}
+          GIST_ID: "a4b55baae4fc0ffc6f8b9e6ee7f12d75"
         run: |
-          # 1. Install Cloudflare
+          # 1. Install Cloudflare Tunnel
           wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
           chmod +x cloudflared
           
@@ -32,20 +43,21 @@ jobs:
           
           # 3. Extract the URL
           TUNNEL_URL=$(grep -o 'https://.*\.trycloudflare\.com' tunnel.log | head -n 1)
-          echo "Tunnel URL: $TUNNEL_URL"
+          echo "Your URL: $TUNNEL_URL"
           
-          # 4. Update Gist so Extension can find it
+          # 4. Update YOUR specific Gist file (gistfile1.txt)
           curl -X PATCH -H "Authorization: token $GH_PAT" \
                -H "Content-Type: application/json" \
-               -d "{\"files\":{\"android_url.txt\":{\"content\":\"$TUNNEL_URL\"}}}" \
+               -d "{\"files\":{\"gistfile1.txt\":{\"content\":\"$TUNNEL_URL\"}}}" \
                https://api.github.com/gists/$GIST_ID
 
-      - name: Keep Alive & Auto-Restart
+      - name: Recursive Keep-Alive
+        if: always()
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          # Sleep for 5 hours (18000 seconds) then trigger next run
-          sleep 18000
+          # Wait 5.5 hours then trigger a fresh run
+          sleep 19800
           curl -X POST -H "Authorization: token $GH_PAT" \
                -H "Accept: application/vnd.github.v3+json" \
                https://api.github.com/repos/${{ github.repository }}/actions/workflows/main.yml/dispatches \
