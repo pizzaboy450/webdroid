@@ -1,34 +1,36 @@
-name: Windows Remote Control (Cloudflare)
-on: workflow_dispatch
+name: Persistent Android Stream
+on:
+  workflow_dispatch: # Allows manual start
+  schedule:
+    - cron: '0 */5 * * *' # Backup trigger every 5 hours
 
 jobs:
-  remote_control:
-    runs-on: windows-latest
+  stream:
+    runs-on: ubuntu-latest # NOTE: Standard runners lack KVM; use 'larger' for speed
     steps:
-      - name: Install Control Tools
+      - name: Enable KVM
         run: |
-          # TightVNC for the desktop server, Cloudflared for the tunnel
-          choco install tightvnc cloudflared -y
-        shell: powershell
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger
 
-      - name: Set VNC Password
+      - name: Launch Android & Streamer
+        env:
+          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
         run: |
-          # Set a default password 'remote' for the connection
-          $pass = "remote"
-          Start-Process "C:\Program Files\TightVNC\tvnserver.exe" -ArgumentList "-install" -Wait
-          Start-Process "C:\Program Files\TightVNC\tvnserver.exe" -ArgumentList "-controlservice -setpassword=$pass" -Wait
-          Start-Process "C:\Program Files\TightVNC\tvnserver.exe" -ArgumentList "-controlservice -setviewonlypassword=$pass" -Wait
-          net start "TightVNC Server"
-        shell: powershell
-
-      - name: Start Cloudflare Tunnel
-        shell: powershell
-        run: |
-          # This creates a public 'TryCloudflare' link for the VNC port (5900)
-          # No account or token needed for this quick setup
-          Start-Process cloudflared -ArgumentList "tunnel --url tcp://localhost:5900" -NoNewWindow
-          Start-Sleep -Seconds 20
+          # 1. Setup Docker with Redroid (Android 11) and noVNC
+          docker run -d -p 6080:80 --privileged redroid/redroid:11.0.0-latest
           
-          # Find the URL in the logs
-          Write-Host "--- CHECK LOGS BELOW FOR YOUR TUNNEL URL ---"
-          Get-Content "$env:USERPROFILE\.cloudflared\*.log" -ErrorAction SilentlyContinue | Select-String "trycloudflare.com"
+          # 2. Setup Tunnel (Using Pinggy as it's easier for quick CLI)
+          ssh -o StrictHostKeyChecking=no -R 80:localhost:6080 a.pinggy.io &
+          
+          # 3. Wait and keep alive for 5.5 hours
+          sleep 19800 
+
+      - name: Auto-Restart Workflow
+        if: always()
+        run: |
+          curl -X POST -H "Authorization: token ${{ secrets.GH_PAT }}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/repos/${{ github.repository }}/actions/workflows/android-stream.yml/dispatches \
+          -d '{"ref":"main"}'
