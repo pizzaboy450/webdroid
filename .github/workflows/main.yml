@@ -14,17 +14,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86 novnc python3-websockify jq
           
-      - name: Download Windows ISO
+      - name: Download Pre-installed Windows Image
         run: |
-          # Replace the URL below with a direct download link to a Windows ISO
-          # Note: Tiny10 or Windows Server Core are recommended for speed
-          curl -L -o windows.iso "YOUR_DIRECT_ISO_LINK_HERE"
+          # Downloading a compressed pre-installed Windows disk image
+          # This is much faster than an ISO install
+          curl -L -o windows.gz "https://bit.ly/tiny10-preinstalled" || wget -O windows.gz "https://bit.ly/tiny10-preinstalled"
           
-          # Verify file size (if it's only a few KBs, the download failed/link is dead)
-          ls -lh windows.iso
-
-      - name: Setup Virtual Disk
-        run: qemu-img create -f qcow2 windows.qcow2 25G
+          # Decompress the image
+          gunzip windows.gz
+          mv windows windows.qcow2
 
       - name: Start Ngrok and QEMU
         env:
@@ -42,24 +40,21 @@ jobs:
           
           # Start Ngrok Tunnel
           ngrok http 6080 --log=stdout > /dev/null &
-          sleep 5
+          sleep 8
           
-          # Print the URL clearly in the logs
           echo "=========================================="
           echo "ACCESS YOUR WINDOWS HERE:"
           curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url'
           echo "=========================================="
           
-          # Launch QEMU
-          # Added -boot d to force booting from the CD-ROM first
+          # Launch QEMU with the pre-installed disk
           qemu-system-x86_64 \
             -m 4G \
             -smp 2 \
             -cpu host \
             -enable-kvm \
-            -boot d \
             -drive file=windows.qcow2,format=qcow2 \
-            -cdrom windows.iso \
             -vnc :0 \
             -net nic,model=virtio -net user \
-            -device usb-tablet
+            -device usb-tablet \
+            -vga std
