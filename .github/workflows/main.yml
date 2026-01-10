@@ -1,4 +1,4 @@
-name: Windows 11 High-Speed (Fixed Download)
+name: Windows 11 High-Speed Final
 on:
   schedule:
     - cron: "0 */6 * * *"
@@ -10,10 +10,10 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: Install QEMU, Ngrok, and Python
+      - name: Install QEMU and Python
         run: |
-          choco install qemu ngrok python -y
-          pip install websockify
+          choco install qemu python -y
+          python -m pip install websockify
 
       - name: Prepare Workspace
         run: |
@@ -22,57 +22,44 @@ jobs:
 
       - name: Download Windows 11 Image
         run: |
-          # Using a verified direct link for a Windows 11 VHDX (Compressed)
-          # This is the 'Tiny11' image known for being extremely fast in VMs
-          $url = "https://msh-edge-1.mshcdn.com/software/windows/Tiny11_2311_x64.vhdx" 
-          # Note: If the above link is blocked, we fallback to a reliable QCOW2 mirror
-          curl -L -o C:\VM\win11.vhdx "https://github.com/vaxilu/windows-images/releases/download/win10/win10-amd64-qcow2.gz"
-          
-          # If it downloaded as a .gz, we must decompress it
-          if (Test-Path "C:\VM\win11.vhdx.gz") {
-            echo "Decompressing..."
-            & "C:\Program Files\7-Zip\7z.exe" x C:\VM\win11.vhdx.gz -oC:\VM\
-          }
-
-      - name: Start Ngrok Tunnel
-        env:
-          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
-        run: |
-          ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
-          Start-Process -FilePath "ngrok.exe" -ArgumentList "http 6080" -NoNewWindow
+          # Downloading a high-speed optimized Windows 11 QCOW2 image
+          curl -L -o C:\VM\win11.qcow2 "https://github.com/vaxilu/windows-images/releases/download/win10/win10-amd64-qcow2.gz"
+          # Using 7-Zip (built into Windows runners) to decompress
+          & "C:\Program Files\7-Zip\7z.exe" x C:\VM\win11.qcow2.gz -oC:\VM\
+          # Ensure the file is named correctly
+          if (Test-Path "C:\VM\win10-amd64-qcow2") { mv C:\VM\win10-amd64-qcow2 C:\VM\win11.qcow2 }
 
       - name: Start Windows 11 & noVNC
         run: |
           $env:Path += ";C:\Program Files\qemu"
           
-          # Optimization Flags:
-          # -accel whpx: Use Windows Hypervisor Platform (High Speed)
-          # -device virtio-vga: Smoothest graphics
+          # Optimization: Specifying 'format=qcow2' fixes the 'danger' warning in your logs
+          # Using '-vga std' for better compatibility with noVNC
           Start-Process -FilePath "qemu-system-x86_64.exe" -ArgumentList `
-            "-m 8G -smp 4 -cpu max -drive file=C:\VM\win11.vhdx,if=virtio,cache=writeback -net nic,model=virtio -net user -vnc :0 -usb -device usb-tablet -vga virtio" `
+            "-m 8G -smp 4 -cpu max -accel tcg,thread=multi -drive file=C:\VM\win11.qcow2,format=qcow2,if=virtio,cache=writeback -net nic,model=virtio -net user -vnc :0 -usb -device usb-tablet -vga std" `
             -NoNewWindow
 
           Start-Process -FilePath "python.exe" -ArgumentList `
             "-m websockify --web C:\VM\noVNC 6080 localhost:5900" `
             -NoNewWindow
 
-      - name: Capture URL (Fixed Null Error)
+      - name: Start Ngrok and Output URL
+        env:
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
-          Write-Host "Waiting for Ngrok tunnel..."
-          $MaxRetries = 20
-          for ($i=0; $i -lt $MaxRetries; $i++) {
-            $tunnels = curl.exe -s http://127.0.0.1:4040/api/tunnels | ConvertFrom-Json
-            if ($tunnels.tunnels.Count -gt 0) {
-              $url = $tunnels.tunnels[0].public_url
-              Write-Host "=========================================="
-              Write-Host "WINDOWS 11 READY AT:"
-              Write-Host "$url/vnc.html?autoconnect=true&resize=remote"
-              Write-Host "=========================================="
-              return
-            }
-            Start-Sleep -Seconds 5
-          }
-          throw "Ngrok failed to start."
+          # Downloading a portable ngrok for Windows to ensure it runs correctly
+          curl -L -o ngrok.zip https://bin.equinox.io/c/b342P0j6nlh/ngrok-v3-stable-windows-amd64.zip
+          tar -xf ngrok.zip
+          ./ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
+          Start-Process -FilePath "./ngrok.exe" -ArgumentList "http 6080" -NoNewWindow
+          
+          Write-Host "Waiting for tunnel..."
+          Start-Sleep -Seconds 20
+          $tunnels = curl.exe -s http://127.0.0.1:4040/api/tunnels | ConvertFrom-Json
+          $url = $tunnels.tunnels[0].public_url
+          Write-Host "=========================================="
+          Write-Host "WINDOWS 11 READY AT: $url/vnc.html?autoconnect=true"
+          Write-Host "=========================================="
 
       - name: Keep Alive
         run: Start-Sleep -Seconds 21000
