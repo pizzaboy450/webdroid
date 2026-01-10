@@ -1,66 +1,52 @@
-name: Windows via Netboot (Performance Optimized)
+name: Windows Fixed One-Click
 on: 
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    # Added a long timeout since emulation is slow
-    timeout-minutes: 360 
     steps:
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86 novnc python3-websockify jq
-          
-      - name: Download Netboot Loader
+
+      - name: Download Windows Disk Image
         run: |
-          curl -L -o netboot.iso https://boot.netboot.xyz/ipxe/netboot.xyz.iso
-
-      - name: Setup Virtual Disk
-        run: qemu-img create -f qcow2 windows.qcow2 40G
-
-      - name: Start Ngrok and QEMU
+          # Downloading a pre-installed Windows 10 Disk (QCOW2)
+          # We use a direct link to a reliable cloud image
+          curl -L -o windows.qcow2 "https://app.vagrantup.com/mikesheely/boxes/windows-10-64/versions/1.0.0/providers/qemu.box" 
+          # Note: If the file is a .box or .zip, we ensure it's named .qcow2 for QEMU
+          
+      - name: Start Tunnel and Windows
         env:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
-          # Install Ngrok
+          # Setup Ngrok
           curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
           echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
           sudo apt-get update && sudo apt-get install ngrok
           ngrok config add-authtoken $NGROK_AUTH_TOKEN
           
-          # Start noVNC proxy
+          # Start noVNC
           websockify --web /usr/share/novnc/ 6080 localhost:5900 &
           
-          # Start Ngrok Tunnel
+          # Start Tunnel
           ngrok http 6080 --log=stdout > /dev/null &
           sleep 10
           
-          export VNC_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
           echo "=========================================="
-          echo "ACCESS YOUR VNC HERE: $VNC_URL/vnc.html"
+          echo "URL: $(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')/vnc.html"
           echo "=========================================="
           
-          # Launch QEMU with optimized Emulation flags
-          # -cpu max: Provides the best feature set for software emulation
-          # -vga vmware: Often performs smoother in noVNC than 'std'
+          # Boot QEMU
+          # We use 'index=0,media=disk' to ensure QEMU treats it as the primary boot drive
           qemu-system-x86_64 \
             -m 4G \
             -smp 2 \
             -cpu max \
-            -usb \
-            -device usb-tablet \
-            -boot d \
-            -drive file=windows.qcow2,format=qcow2,cache=writeback \
-            -cdrom netboot.iso \
+            -usb -device usb-tablet \
+            -drive file=windows.qcow2,format=qcow2,index=0,media=disk \
             -vnc :0 \
             -net nic,model=virtio -net user \
-            -vga vmware &
-          
-          # Keep Alive loop: Prevents GitHub from killing the job for 'inactivity'
-          # while you are working in the VNC window.
-          while true; do
-            echo "Keep-alive: Windows is running. Connect at: $VNC_URL/vnc.html"
-            sleep 300
-          done
+            -vga vmware
