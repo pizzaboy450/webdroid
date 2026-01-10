@@ -1,4 +1,4 @@
-name: Windows Fixed One-Click
+name: Windows Fixed Extraction
 on: 
   workflow_dispatch:
 
@@ -9,14 +9,20 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 novnc python3-websockify jq
-
-      - name: Download Windows Disk Image
+          sudo apt-get install -y qemu-system-x86 novnc python3-websockify jq tar
+          
+      - name: Download and Extract Windows Image
         run: |
-          # Downloading a pre-installed Windows 10 Disk (QCOW2)
-          # We use a direct link to a reliable cloud image
-          curl -L -o windows.qcow2 "https://app.vagrantup.com/mikesheely/boxes/windows-10-64/versions/1.0.0/providers/qemu.box" 
-          # Note: If the file is a .box or .zip, we ensure it's named .qcow2 for QEMU
+          # 1. Download the Vagrant box (which is a compressed tarball)
+          curl -L -o windows_box.tar.gz "https://app.vagrantup.com/mikesheely/boxes/windows-10-64/versions/1.0.0/providers/qemu.box"
+          
+          # 2. Extract the contents
+          # Vagrant boxes for QEMU usually contain a file named 'box.img' or 'content-0'
+          tar -xvf windows_box.tar.gz
+          
+          # 3. Identify and rename the disk file to windows.qcow2
+          # We search for the largest file extracted, which is the disk
+          mv $(ls -S | head -1) windows.qcow2
           
       - name: Start Tunnel and Windows
         env:
@@ -40,13 +46,13 @@ jobs:
           echo "=========================================="
           
           # Boot QEMU
-          # We use 'index=0,media=disk' to ensure QEMU treats it as the primary boot drive
+          # We use -m 4G and -cpu max for the best possible speed under emulation
           qemu-system-x86_64 \
             -m 4G \
             -smp 2 \
             -cpu max \
             -usb -device usb-tablet \
-            -drive file=windows.qcow2,format=qcow2,index=0,media=disk \
+            -drive file=windows.qcow2,format=qcow2,cache=writeback \
             -vnc :0 \
             -net nic,model=virtio -net user \
             -vga vmware
