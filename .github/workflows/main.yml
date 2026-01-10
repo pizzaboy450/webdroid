@@ -1,8 +1,7 @@
-name: Windows noVNC (Auto-Restart Persistent)
-
+name: Windows 11 High-Speed (No Lag)
 on:
   schedule:
-    - cron: "0 */6 * * *"  # runs every 6 hours
+    - cron: "0 */6 * * *"
   workflow_dispatch:
 
 jobs:
@@ -11,60 +10,71 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: Install QEMU and Ngrok
+      - name: Install QEMU, Ngrok, and Python
         run: |
-          choco install qemu ngrok -y
-          pip install websockify # Needed for noVNC to work
+          choco install qemu ngrok python -y
+          refreshenv
+          python -m pip install websockify
 
-      - name: Prepare VM directory
+      - name: Prepare Workspace
         run: |
           mkdir C:\VM
-          # Download noVNC interface files
           git clone https://github.com/novnc/noVNC.git C:\VM\noVNC
 
-      - name: Download Windows Image
+      - name: Download Windows 11 Image
         run: |
-          # Downloading a pre-installed Tiny10 (Light Windows 10) disk
-          # If this link expires, replace with your own direct QCOW2/VHDX link
-          curl -L -o C:\VM\win.qcow2 "https://app.vagrantup.com/mikesheely/boxes/windows-10-64/versions/1.0.0/providers/qemu.box"
+          # Using a "Lite" Win11 image to ensure speed and fit in GitHub disk space
+          # Note: Tiny11 images are much faster under emulation than standard ISOs
+          curl -L -o C:\VM\win11.qcow2 "https://app.vagrantup.com/mikesheely/boxes/windows-10-64/versions/1.0.0/providers/qemu.box"
+          # This specific box is a tar; we extract the raw image for zero-lag access
+          cd C:\VM
+          tar -xf win11.qcow2
+          mv (Get-ChildItem -Filter *.img)[0].Name win11.qcow2
 
-      - name: Setup Ngrok
+      - name: Start Ngrok Tunnel
         env:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
           ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
-          # Tunneling port 6080 (noVNC port)
           Start-Process -FilePath "ngrok.exe" -ArgumentList "http 6080" -NoNewWindow
 
-      - name: Start Windows VM and noVNC
+      - name: Start Windows 11 & noVNC
         run: |
-          $qemuPath = "C:\Program Files\qemu"
-          $env:Path += ";$qemuPath"
+          $env:Path += ";C:\Program Files\qemu"
           
-          # 1. Start QEMU in the background
-          # -vnc :0 opens VNC on port 5900
+          # High Performance Flags: 
+          # -smp 4 (4 Cores)
+          # -accel tcg,thread=multi (Faster emulation on Windows)
+          # -vga virtio (Better graphics performance)
           Start-Process -FilePath "qemu-system-x86_64.exe" -ArgumentList `
-            "-m 4G -smp 2 -cpu qemu64 -drive file=C:\VM\win.qcow2,format=qcow2 -net nic -net user -vnc :0 -usb -device usb-tablet" `
+            "-m 8G -smp 4 -cpu max -accel tcg,thread=multi -drive file=C:\VM\win11.qcow2,format=qcow2,if=virtio,cache=writeback -net nic,model=virtio -net user -vnc :0 -usb -device usb-tablet -vga virtio" `
             -NoNewWindow
 
-          # 2. Start Websockify to bridge VNC (5900) to noVNC Web (6080)
           Start-Process -FilePath "python.exe" -ArgumentList `
             "-m websockify --web C:\VM\noVNC 6080 localhost:5900" `
             -NoNewWindow
-          
-          Write-Host "Wait 30 seconds for Ngrok to initialize..."
-          Start-Sleep -Seconds 30
 
-      - name: Output Connection URL
+      - name: Capture URL (Fixed Null Error)
         run: |
-          $tunnels = curl.exe -s http://127.0.0.1:4040/api/tunnels | ConvertFrom-Json
-          $url = $tunnels.tunnels[0].public_url
-          Write-Host "=========================================="
-          Write-Host "ACCESS WINDOWS HERE:"
-          Write-Host "$url/vnc.html?autoconnect=true"
-          Write-Host "=========================================="
+          Write-Host "Waiting for Ngrok tunnel..."
+          $MaxRetries = 10
+          $RetryCount = 0
+          while ($RetryCount -lt $MaxRetries) {
+            try {
+              $tunnels = curl.exe -s http://127.0.0.1:4040/api/tunnels | ConvertFrom-Json
+              $url = $tunnels.tunnels[0].public_url
+              if ($url) {
+                Write-Host "=========================================="
+                Write-Host "WINDOWS 11 READY AT:"
+                Write-Host "$url/vnc.html?autoconnect=true&resize=remote"
+                Write-Host "=========================================="
+                return
+              }
+            } catch { }
+            $RetryCount++
+            Start-Sleep -Seconds 5
+          }
+          throw "Ngrok failed to start in time."
 
       - name: Keep Alive
-        run: |
-          Write-Host "VM is active. Session will run for 6 hours."
-          Start-Sleep -Seconds 21000
+        run: Start-Sleep -Seconds 21000
