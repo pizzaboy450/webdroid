@@ -1,4 +1,4 @@
-name: Windows on noVNC
+name: Windows via Netboot
 on: 
   workflow_dispatch:
 
@@ -6,23 +6,18 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86 novnc python3-websockify jq
           
-      - name: Download Pre-installed Windows Image
+      - name: Download Netboot Loader
         run: |
-          # Downloading a compressed pre-installed Windows disk image
-          # This is much faster than an ISO install
-          curl -L -o windows.gz "https://bit.ly/tiny10-preinstalled" || wget -O windows.gz "https://bit.ly/tiny10-preinstalled"
-          
-          # Decompress the image
-          gunzip windows.gz
-          mv windows windows.qcow2
+          # This is a tiny bootloader that installs OSs over the network
+          curl -L -o netboot.iso https://boot.netboot.xyz/ipxe/netboot.xyz.iso
+
+      - name: Setup Virtual Disk
+        run: qemu-img create -f qcow2 windows.qcow2 30G
 
       - name: Start Ngrok and QEMU
         env:
@@ -40,20 +35,23 @@ jobs:
           
           # Start Ngrok Tunnel
           ngrok http 6080 --log=stdout > /dev/null &
-          sleep 8
+          sleep 5
           
           echo "=========================================="
-          echo "ACCESS YOUR WINDOWS HERE:"
+          echo "ACCESS YOUR VNC HERE:"
           curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url'
           echo "=========================================="
           
-          # Launch QEMU with the pre-installed disk
+          # Launch QEMU
+          # We boot from netboot.iso to choose the OS installation
           qemu-system-x86_64 \
             -m 4G \
             -smp 2 \
             -cpu host \
             -enable-kvm \
+            -boot d \
             -drive file=windows.qcow2,format=qcow2 \
+            -cdrom netboot.iso \
             -vnc :0 \
             -net nic,model=virtio -net user \
             -device usb-tablet \
