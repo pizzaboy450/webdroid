@@ -1,70 +1,50 @@
-name: RDP-noVNC-Cloudflare-Fixed
+name: Windows GUI via Tmate
 on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
+  build:
     runs-on: windows-latest
-    timeout-minutes: 360
-
     steps:
-      - name: Install noVNC and Dependencies
+      - name: Install Tmate and UltraVNC
         run: |
-          choco install ultravnc python -y
+          choco install tmate ultravnc python -y
           python -m pip install websockify
           mkdir C:\noVNC
           git clone https://github.com/novnc/noVNC.git C:\noVNC
 
-      - name: Start UltraVNC Server
+      - name: Start VNC Engine
         run: |
           $vncPath = "C:\Program Files\uvnc bvba\UltraVNC"
-          stop-process -name winvnc -ErrorAction SilentlyContinue
+          # Password: password
           $regPath = "HKLM:\SOFTWARE\UltraVNC\Default"
           if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force }
-          # Password is set to: password
           New-ItemProperty -Path $regPath -Name "Password" -Value ([byte[]](0x5E,0x2B,0xD3,0x64,0x90,0x6F,0x8F,0x00)) -PropertyType Binary -Force
           Start-Process -FilePath "$vncPath\winvnc.exe" -ArgumentList "-run" -NoNewWindow
-
-      - name: Start Websockify Bridge
-        run: |
+          
+          # Start the bridge to make VNC web-accessible locally
           Start-Process -FilePath "python.exe" -ArgumentList "-m websockify --web C:\noVNC 6080 localhost:5900" -NoNewWindow
 
-      - name: Launch Cloudflare Tunnel
+      - name: Launch Tmate Tunnel
+        shell: cmd
         run: |
-          # Download and Install Cloudflared
-          curl -L -o cloudflared.msi https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.msi
-          Start-Process msiexec.exe -ArgumentList "/i", "cloudflared.msi", "/quiet", "/norestart" -Wait
-          
-          # Start Quick Tunnel and pipe logs to a file
-          Write-Host "Starting Cloudflare Tunnel..."
-          Start-Process -FilePath "C:\Program Files (x86)\cloudflared\cloudflared.exe" -ArgumentList "tunnel --url http://localhost:6080" -NoNewWindow -RedirectStandardError "cloudflared.log"
+          :: This starts tmate and saves the connection info to a file
+          start /b tmate -S /tmp/tmate.sock new-session -d
+          tmate -S /tmp/tmate.sock wait-for-session
+          tmate -S /tmp/tmate.sock display -p "#{tmate_web}" > tmate_url.txt
 
-      - name: Get URL and Debug
+      - name: Get Connection Links
         run: |
-          Write-Host "Waiting 30 seconds for Cloudflare to assign a URL..."
-          Start-Sleep -Seconds 30
-          
-          # Show logs to debug 1033 errors
-          Write-Host "--- Cloudflared Logs ---"
-          Get-Content "cloudflared.log"
-          Write-Host "------------------------"
-          
-          # Extract the URL from the log file
-          $url = Get-Content "cloudflared.log" | Select-String -Pattern "https://.*\.trycloudflare\.com" | ForEach-Object { $_.Matches.Value }
-          
-          if ($url) {
-            Write-Host "=========================================="
-            Write-Host "ACCESS WINDOWS HERE:"
-            Write-Host "$url/vnc.html?autoconnect=true"
-            Write-Host "VNC Password: password"
-            Write-Host "=========================================="
-          } else {
-            Write-Error "Could not find a TryCloudflare URL in the logs."
-          }
+          $tmateUrl = Get-Content tmate_url.txt
+          Write-Host "=========================================="
+          Write-Host "STEP 1: OPEN THIS TERMINAL LINK:"
+          Write-Host "$tmateUrl"
+          Write-Host "=========================================="
+          Write-Host "STEP 2: IN THAT TERMINAL, PASTE THIS:"
+          Write-Host "curl -s localhost:6080"
+          Write-Host "=========================================="
 
       - name: Keep Alive
         run: |
-          while ($true) {
-            Start-Sleep -Seconds 300
-            Write-Host "Session active..."
-          }
+          Write-Host "Runner is active. If tmate disconnects, the job ends."
+          Start-Sleep -Seconds 21600
