@@ -1,4 +1,4 @@
-name: RDP-noVNC
+name: RDP-noVNC (Fixed)
 
 on:
   workflow_dispatch:
@@ -11,24 +11,17 @@ jobs:
     steps:
       - name: Install noVNC and Dependencies
         run: |
-          # Install UltraVNC (Server), Python, and Ngrok
           choco install ultravnc ngrok python -y
           python -m pip install websockify
-          
-          # Download noVNC Web UI
           mkdir C:\noVNC
           git clone https://github.com/novnc/noVNC.git C:\noVNC
 
       - name: Configure UltraVNC Server
         run: |
-          # Set a default VNC password ('password') and start the service
           $vncPath = "C:\Program Files\uvnc bvba\UltraVNC"
-          # Stop service to configure
           net stop uvnc_service
-          # Write basic configuration (password is required for VNC to start)
-          # 'password' in hex for UltraVNC is roughly 5E2BD364906F8F
           & "$vncPath\winvnc.exe" -install
-          & "$vncPath\winvnc.exe" -reinstall
+          # UltraVNC requires a service restart to apply default settings
           net start uvnc_service
 
       - name: Setup Ngrok Tunnel
@@ -36,27 +29,48 @@ jobs:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
           ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
-          # Tunnel port 6080 (the web port for noVNC)
+          # Use Start-Process so ngrok runs in the background
           Start-Process -FilePath "ngrok.exe" -ArgumentList "http 6080" -NoNewWindow
 
       - name: Start Websockify Bridge
         run: |
-          # Bridge local VNC (5900) to noVNC Web (6080)
           Start-Process -FilePath "python.exe" -ArgumentList "-m websockify --web C:\noVNC 6080 localhost:5900" -NoNewWindow
 
-      - name: Get Public URL
+      - name: Get Public URL (Fixed Loop)
         run: |
-          Write-Host "Waiting for Ngrok..."
-          Start-Sleep -Seconds 15
-          $tunnels = curl.exe -s http://127.0.0.1:4040/api/tunnels | ConvertFrom-Json
-          $url = $tunnels.tunnels[0].public_url
-          
-          Write-Host "`n=== WEB ACCESS READY ==="
-          Write-Host "Link: $url/vnc.html?autoconnect=true"
-          Write-Host "VNC Password: password (if prompted)"
-          Write-Host "========================`n"
+          Write-Host "Waiting for Ngrok tunnel to initialize..."
+          $MaxRetries = 20
+          $RetryCount = 0
+          $url = $null
 
-      - name: Maintain Connection
+          while (-not $url -and $RetryCount -lt $MaxRetries) {
+            try {
+              $response = curl.exe -s http://127.0.0.1:4040/api/tunnels | ConvertFrom-Json
+              if ($response.tunnels.Count -gt 0) {
+                $url = $response.tunnels[0].public_url
+              }
+            } catch {
+              # API might not be up yet
+            }
+            if (-not $url) {
+              Start-Sleep -Seconds 5
+              $RetryCount++
+              Write-Host "Retrying... ($RetryCount/$MaxRetries)"
+            }
+          }
+
+          if ($url) {
+            Write-Host "`n=========================================="
+            Write-Host "ACCESS YOUR WINDOWS HERE:"
+            Write-Host "$url/vnc.html?autoconnect=true"
+            Write-Host "VNC Password: (Check UltraVNC defaults or leave blank)"
+            Write-Host "==========================================`n"
+          } else {
+            Write-Error "Ngrok failed to provide a URL after $MaxRetries attempts."
+            exit 1
+          }
+
+      - name: Keep Alive
         run: |
           while ($true) {
             Write-Host "[$(Get-Date)] noVNC Session Active..."
