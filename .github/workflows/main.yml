@@ -1,10 +1,12 @@
-name: Windows via Netboot (Fixed Permissions)
+name: Windows via Netboot (Performance Optimized)
 on: 
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Added a long timeout since emulation is slow
+    timeout-minutes: 360 
     steps:
       - name: Install Dependencies
         run: |
@@ -16,7 +18,7 @@ jobs:
           curl -L -o netboot.iso https://boot.netboot.xyz/ipxe/netboot.xyz.iso
 
       - name: Setup Virtual Disk
-        run: qemu-img create -f qcow2 windows.qcow2 30G
+        run: qemu-img create -f qcow2 windows.qcow2 40G
 
       - name: Start Ngrok and QEMU
         env:
@@ -26,7 +28,6 @@ jobs:
           curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
           echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
           sudo apt-get update && sudo apt-get install ngrok
-          
           ngrok config add-authtoken $NGROK_AUTH_TOKEN
           
           # Start noVNC proxy
@@ -34,25 +35,32 @@ jobs:
           
           # Start Ngrok Tunnel
           ngrok http 6080 --log=stdout > /dev/null &
-          sleep 5
+          sleep 10
           
+          export VNC_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
           echo "=========================================="
-          echo "ACCESS YOUR VNC HERE:"
-          curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url'
+          echo "ACCESS YOUR VNC HERE: $VNC_URL/vnc.html"
           echo "=========================================="
           
-          # Launch QEMU
-          # 1. Removed -enable-kvm to prevent the permission error
-          # 2. Added -cpu core2duo for better compatibility in emulation mode
-          # 3. Added -vga std for better noVNC display
+          # Launch QEMU with optimized Emulation flags
+          # -cpu max: Provides the best feature set for software emulation
+          # -vga vmware: Often performs smoother in noVNC than 'std'
           qemu-system-x86_64 \
             -m 4G \
             -smp 2 \
-            -cpu core2duo \
+            -cpu max \
+            -usb \
+            -device usb-tablet \
             -boot d \
-            -drive file=windows.qcow2,format=qcow2 \
+            -drive file=windows.qcow2,format=qcow2,cache=writeback \
             -cdrom netboot.iso \
             -vnc :0 \
             -net nic,model=virtio -net user \
-            -device usb-tablet \
-            -vga std
+            -vga vmware &
+          
+          # Keep Alive loop: Prevents GitHub from killing the job for 'inactivity'
+          # while you are working in the VNC window.
+          while true; do
+            echo "Keep-alive: Windows is running. Connect at: $VNC_URL/vnc.html"
+            sleep 300
+          done
