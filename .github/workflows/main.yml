@@ -1,4 +1,4 @@
-name: RDP-noVNC-Cloudflare
+name: RDP-noVNC-Cloudflare-Fixed
 on:
   workflow_dispatch:
 
@@ -21,45 +21,45 @@ jobs:
           stop-process -name winvnc -ErrorAction SilentlyContinue
           $regPath = "HKLM:\SOFTWARE\UltraVNC\Default"
           if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force }
+          # Password is set to: password
           New-ItemProperty -Path $regPath -Name "Password" -Value ([byte[]](0x5E,0x2B,0xD3,0x64,0x90,0x6F,0x8F,0x00)) -PropertyType Binary -Force
           Start-Process -FilePath "$vncPath\winvnc.exe" -ArgumentList "-run" -NoNewWindow
 
       - name: Start Websockify Bridge
         run: |
-          # Bridge VNC (5900) to Web (6080)
           Start-Process -FilePath "python.exe" -ArgumentList "-m websockify --web C:\noVNC 6080 localhost:5900" -NoNewWindow
 
-      - name: Install and Run Cloudflare Tunnel
-        env:
-          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+      - name: Launch Cloudflare Tunnel
         run: |
-          # Download cloudflared
+          # Download and Install Cloudflared
           curl -L -o cloudflared.msi https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.msi
           Start-Process msiexec.exe -ArgumentList "/i", "cloudflared.msi", "/quiet", "/norestart" -Wait
           
-          # Start the tunnel
-          # Replace 'YOUR_DOMAIN' if you are using a managed tunnel, 
-          # otherwise, we will use a Quick Tunnel (TryCloudflare)
-          if ($env:CLOUDFLARE_TUNNEL_TOKEN) {
-            Start-Process -FilePath "C:\Program Files (x86)\cloudflared\cloudflared.exe" -ArgumentList "tunnel --no-autoupdate run --token $env:CLOUDFLARE_TUNNEL_TOKEN" -NoNewWindow
-          } else {
-            # Start a temporary Quick Tunnel if no token is provided
-            Start-Process -FilePath "C:\Program Files (x86)\cloudflared\cloudflared.exe" -ArgumentList "tunnel --url http://localhost:6080" -NoNewWindow -RedirectStandardOutput "cloudflared.log"
-          }
+          # Start Quick Tunnel and pipe logs to a file
+          Write-Host "Starting Cloudflare Tunnel..."
+          Start-Process -FilePath "C:\Program Files (x86)\cloudflared\cloudflared.exe" -ArgumentList "tunnel --url http://localhost:6080" -NoNewWindow -RedirectStandardError "cloudflared.log"
 
-      - name: Get Cloudflare URL
+      - name: Get URL and Debug
         run: |
-          Write-Host "Waiting for Cloudflare Tunnel..."
-          Start-Sleep -Seconds 20
-          if (Test-Path "cloudflared.log") {
-            $url = Get-Content "cloudflared.log" | Select-String -Pattern "https://.*\.trycloudflare\.com" | ForEach-Object { $_.Matches.Value }
+          Write-Host "Waiting 30 seconds for Cloudflare to assign a URL..."
+          Start-Sleep -Seconds 30
+          
+          # Show logs to debug 1033 errors
+          Write-Host "--- Cloudflared Logs ---"
+          Get-Content "cloudflared.log"
+          Write-Host "------------------------"
+          
+          # Extract the URL from the log file
+          $url = Get-Content "cloudflared.log" | Select-String -Pattern "https://.*\.trycloudflare\.com" | ForEach-Object { $_.Matches.Value }
+          
+          if ($url) {
             Write-Host "=========================================="
-            Write-Host "ACCESS YOUR WINDOWS HERE:"
+            Write-Host "ACCESS WINDOWS HERE:"
             Write-Host "$url/vnc.html?autoconnect=true"
             Write-Host "VNC Password: password"
             Write-Host "=========================================="
           } else {
-            Write-Host "Check your Cloudflare Dashboard for the active tunnel URL."
+            Write-Error "Could not find a TryCloudflare URL in the logs."
           }
 
       - name: Keep Alive
@@ -68,4 +68,3 @@ jobs:
             Start-Sleep -Seconds 300
             Write-Host "Session active..."
           }
-        
