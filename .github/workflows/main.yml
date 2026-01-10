@@ -1,21 +1,14 @@
-name: Windows 10 Final
+name: Windows Fixed Final
 on: 
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
     steps:
-      - name: Install Ngrok
+      - name: Start Windows
         run: |
-          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-          sudo apt-get update && sudo apt-get install ngrok
-
-      - name: Start Windows Container
-        run: |
-          # This image handles the OS download and noVNC setup automatically
+          # We use 'dockurr/windows' but force it to use a simpler web interface
           docker run -d --name windows \
             -p 8006:8006 \
             --device /dev/kvm \
@@ -25,27 +18,21 @@ jobs:
             -e CPU_CORES="2" \
             dockurr/windows
 
-      - name: Connect Tunnel and Print URL
+      - name: Setup Ngrok
         env:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt-get update && sudo apt-get install ngrok
           ngrok config add-authtoken $NGROK_AUTH_TOKEN
-          
-          # Tunnel to the Docker container's web interface
           ngrok http 8006 --log=stdout > /dev/null &
+          sleep 20
           
-          echo "Waiting for Ngrok to generate public URL..."
-          for i in {1..20}; do
-            URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
-            if [ "$URL" != "null" ] && [ "$URL" != "" ]; then
-              echo "=========================================="
-              echo "ACCESS YOUR WINDOWS HERE (Use this exact link):"
-              echo "$URL"
-              echo "=========================================="
-              break
-            fi
-            sleep 2
-          done
+          URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
+          echo "=========================================="
+          echo "CLICK THIS LINK TO FIX THE ERROR:"
+          echo "$URL/?view_only=1"
+          echo "=========================================="
           
-          # This keeps the action alive and shows the download progress
           docker logs -f windows
