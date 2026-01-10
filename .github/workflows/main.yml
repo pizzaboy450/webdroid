@@ -1,11 +1,11 @@
 name: Windows 10 Final
 on: 
-  workflow_dispatch: # Allows you to start it manually
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # Keeps the VM alive for 6 hours
+    timeout-minutes: 360
     steps:
       - name: Install Ngrok
         run: |
@@ -15,8 +15,7 @@ jobs:
 
       - name: Start Windows Container
         run: |
-          # Pulls and starts a pre-configured Windows 10 environment
-          # Port 8006 is the internal web-based VNC port
+          # This image handles the OS download and noVNC setup automatically
           docker run -d --name windows \
             -p 8006:8006 \
             --device /dev/kvm \
@@ -30,19 +29,17 @@ jobs:
         env:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
-          # Authenticate Ngrok
           ngrok config add-authtoken $NGROK_AUTH_TOKEN
           
-          # Start tunnel to the Windows web port
+          # Tunnel to the Docker container's web interface
           ngrok http 8006 --log=stdout > /dev/null &
           
           echo "Waiting for Ngrok to generate public URL..."
-          # Retry loop to ensure the URL is captured after Ngrok starts
           for i in {1..20}; do
             URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
             if [ "$URL" != "null" ] && [ "$URL" != "" ]; then
               echo "=========================================="
-              echo "ACCESS YOUR WINDOWS HERE:"
+              echo "ACCESS YOUR WINDOWS HERE (Use this exact link):"
               echo "$URL"
               echo "=========================================="
               break
@@ -50,5 +47,5 @@ jobs:
             sleep 2
           done
           
-          # Stream the internal logs so the GitHub Action stays active
+          # This keeps the action alive and shows the download progress
           docker logs -f windows
