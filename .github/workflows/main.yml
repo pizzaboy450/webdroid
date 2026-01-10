@@ -1,4 +1,4 @@
-name: Windows Fixed Extraction
+name: Windows Fixed Final
 on: 
   workflow_dispatch:
 
@@ -9,26 +9,22 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 novnc python3-websockify jq tar
+          sudo apt-get install -y qemu-system-x86 novnc python3-websockify jq
           
-      - name: Download and Extract Windows Image
+      - name: Download Windows Disk
         run: |
-          # 1. Download the Vagrant box (which is a compressed tarball)
-          curl -L -o windows_box.tar.gz "https://app.vagrantup.com/mikesheely/boxes/windows-10-64/versions/1.0.0/providers/qemu.box"
+          # Using a direct link to a pre-installed Windows 10 QCOW2 image
+          # This image is approx 4-5GB, so it will take a few minutes to download
+          curl -L -o windows.qcow2.gz "https://github.com/vaxilu/windows-images/releases/download/win10/win10-amd64-qcow2.gz"
           
-          # 2. Extract the contents
-          # Vagrant boxes for QEMU usually contain a file named 'box.img' or 'content-0'
-          tar -xvf windows_box.tar.gz
-          
-          # 3. Identify and rename the disk file to windows.qcow2
-          # We search for the largest file extracted, which is the disk
-          mv $(ls -S | head -1) windows.qcow2
+          echo "Decompressing image..."
+          gunzip windows.qcow2.gz
           
       - name: Start Tunnel and Windows
         env:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
-          # Setup Ngrok
+          # Install Ngrok
           curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
           echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
           sudo apt-get update && sudo apt-get install ngrok
@@ -46,7 +42,7 @@ jobs:
           echo "=========================================="
           
           # Boot QEMU
-          # We use -m 4G and -cpu max for the best possible speed under emulation
+          # -cpu host is replaced with -cpu max for better compatibility in Actions
           qemu-system-x86_64 \
             -m 4G \
             -smp 2 \
