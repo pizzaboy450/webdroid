@@ -1,4 +1,4 @@
-name: Windows via Docker (Fixed)
+name: Windows Fixed Final
 on: 
   workflow_dispatch:
 
@@ -6,36 +6,37 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: Start Windows via Docker
+        run: |
+          # We use port 80 (standard HTTP) to avoid noVNC pathing issues
+          docker run -d --name windows \
+            -p 80:8006 \
+            --device /dev/kvm \
+            --cap-add NET_ADMIN \
+            -e VERSION="win10" \
+            -e RAM_SIZE="4G" \
+            -e CPU_CORES="2" \
+            dockurr/windows
+
       - name: Install Ngrok
         run: |
           curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
           echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
           sudo apt-get update && sudo apt-get install ngrok
-          
-      - name: Start Windows Container
-        run: |
-          # This starts a pre-configured Windows environment
-          # It automatically handles the VNC and Web setup
-          docker run -d --name windows \
-            -p 8006:8006 \
-            --device /dev/kvm \
-            --cap-add NET_ADMIN \
-            -e VERSION="win10" \
-            dockurr/windows
 
-      - name: Start Tunnel
+      - name: Connect Tunnel
         env:
           NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
           ngrok config add-authtoken $NGROK_AUTH_TOKEN
-          # Tunnel to port 8006 (The Docker Windows web port)
-          ngrok http 8006 --log=stdout > /dev/null &
-          sleep 20
+          ngrok http 80 --log=stdout > /dev/null &
+          sleep 30
           
           echo "=========================================="
-          echo "ACCESS YOUR WINDOWS HERE:"
+          echo "STEP 1: Open this link:"
           curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url'
+          echo "STEP 2: Wait for the 'Downloading' progress bar to finish."
           echo "=========================================="
           
-          # Keep the action running
+          # This keeps the logs moving so GitHub doesn't kill the session
           docker logs -f windows
