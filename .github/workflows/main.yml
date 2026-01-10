@@ -1,4 +1,4 @@
-name: Windows via Netboot
+name: Windows via Netboot (Fixed Permissions)
 on: 
   workflow_dispatch:
 
@@ -13,7 +13,6 @@ jobs:
           
       - name: Download Netboot Loader
         run: |
-          # This is a tiny bootloader that installs OSs over the network
           curl -L -o netboot.iso https://boot.netboot.xyz/ipxe/netboot.xyz.iso
 
       - name: Setup Virtual Disk
@@ -43,12 +42,13 @@ jobs:
           echo "=========================================="
           
           # Launch QEMU
-          # We boot from netboot.iso to choose the OS installation
+          # 1. Removed -enable-kvm to prevent the permission error
+          # 2. Added -cpu core2duo for better compatibility in emulation mode
+          # 3. Added -vga std for better noVNC display
           qemu-system-x86_64 \
             -m 4G \
             -smp 2 \
-            -cpu host \
-            -enable-kvm \
+            -cpu core2duo \
             -boot d \
             -drive file=windows.qcow2,format=qcow2 \
             -cdrom netboot.iso \
