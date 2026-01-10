@@ -1,5 +1,4 @@
-name: RDP-noVNC (Direct Fix)
-
+name: RDP-noVNC-Cloudflare
 on:
   workflow_dispatch:
 
@@ -11,7 +10,7 @@ jobs:
     steps:
       - name: Install noVNC and Dependencies
         run: |
-          choco install ultravnc ngrok python -y
+          choco install ultravnc python -y
           python -m pip install websockify
           mkdir C:\noVNC
           git clone https://github.com/novnc/noVNC.git C:\noVNC
@@ -20,47 +19,53 @@ jobs:
         run: |
           $vncPath = "C:\Program Files\uvnc bvba\UltraVNC"
           stop-process -name winvnc -ErrorAction SilentlyContinue
-          # Injected password: password
           $regPath = "HKLM:\SOFTWARE\UltraVNC\Default"
           if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force }
           New-ItemProperty -Path $regPath -Name "Password" -Value ([byte[]](0x5E,0x2B,0xD3,0x64,0x90,0x6F,0x8F,0x00)) -PropertyType Binary -Force
           Start-Process -FilePath "$vncPath\winvnc.exe" -ArgumentList "-run" -NoNewWindow
 
-      - name: Start Ngrok (Forced Background)
-        env:
-          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
-        run: |
-          # Use --accept-tos to prevent ngrok from hanging on the first run
-          ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
-          Start-ThreadJob { ngrok http 6080 --log=stdout }
-          
       - name: Start Websockify Bridge
         run: |
-          # Bridge local VNC (5900) to noVNC Web (6080)
+          # Bridge VNC (5900) to Web (6080)
           Start-Process -FilePath "python.exe" -ArgumentList "-m websockify --web C:\noVNC 6080 localhost:5900" -NoNewWindow
 
-      - name: Get Public URL (Reliable Loop)
+      - name: Install and Run Cloudflare Tunnel
+        env:
+          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
         run: |
-          Write-Host "Searching for active tunnel..."
-          for ($i=1; $i -le 30; $i++) {
-            $tunnels = curl.exe -s http://127.0.0.1:4040/api/tunnels | ConvertFrom-Json
-            if ($tunnels.tunnels.Count -gt 0) {
-              $url = $tunnels.tunnels[0].public_url
-              Write-Host "=========================================="
-              Write-Host "ACCESS YOUR WINDOWS HERE:"
-              Write-Host "$url/vnc.html?autoconnect=true"
-              Write-Host "VNC Password: password"
-              Write-Host "=========================================="
-              return
-            }
-            Write-Host "Tunnel not ready... attempt $i/30"
-            Start-Sleep -Seconds 3
+          # Download cloudflared
+          curl -L -o cloudflared.msi https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.msi
+          Start-Process msiexec.exe -ArgumentList "/i", "cloudflared.msi", "/quiet", "/norestart" -Wait
+          
+          # Start the tunnel
+          # Replace 'YOUR_DOMAIN' if you are using a managed tunnel, 
+          # otherwise, we will use a Quick Tunnel (TryCloudflare)
+          if ($env:CLOUDFLARE_TUNNEL_TOKEN) {
+            Start-Process -FilePath "C:\Program Files (x86)\cloudflared\cloudflared.exe" -ArgumentList "tunnel --no-autoupdate run --token $env:CLOUDFLARE_TUNNEL_TOKEN" -NoNewWindow
+          } else {
+            # Start a temporary Quick Tunnel if no token is provided
+            Start-Process -FilePath "C:\Program Files (x86)\cloudflared\cloudflared.exe" -ArgumentList "tunnel --url http://localhost:6080" -NoNewWindow -RedirectStandardOutput "cloudflared.log"
           }
-          throw "Ngrok failed to initialize."
 
-      - name: Maintain Connection
+      - name: Get Cloudflare URL
+        run: |
+          Write-Host "Waiting for Cloudflare Tunnel..."
+          Start-Sleep -Seconds 20
+          if (Test-Path "cloudflared.log") {
+            $url = Get-Content "cloudflared.log" | Select-String -Pattern "https://.*\.trycloudflare\.com" | ForEach-Object { $_.Matches.Value }
+            Write-Host "=========================================="
+            Write-Host "ACCESS YOUR WINDOWS HERE:"
+            Write-Host "$url/vnc.html?autoconnect=true"
+            Write-Host "VNC Password: password"
+            Write-Host "=========================================="
+          } else {
+            Write-Host "Check your Cloudflare Dashboard for the active tunnel URL."
+          }
+
+      - name: Keep Alive
         run: |
           while ($true) {
             Start-Sleep -Seconds 300
             Write-Host "Session active..."
           }
+        
