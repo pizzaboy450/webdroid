@@ -1,4 +1,4 @@
-name: Windows Fixed Final
+name: Windows Final Fixed
 on: 
   workflow_dispatch:
 
@@ -6,33 +6,36 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Start Windows
+      - name: Start Windows via Docker
         run: |
-          # We use 'dockurr/windows' but force it to use a simpler web interface
+          # We are using a stable version and disabling the auto-clipboard
           docker run -d --name windows \
             -p 8006:8006 \
             --device /dev/kvm \
             --cap-add NET_ADMIN \
             -e VERSION="win10" \
             -e RAM_SIZE="4G" \
-            -e CPU_CORES="2" \
             dockurr/windows
 
-      - name: Setup Ngrok
-        env:
-          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+      - name: Install Ngrok
         run: |
           curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
           echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
           sudo apt-get update && sudo apt-get install ngrok
+
+      - name: Connect Tunnel
+        env:
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+        run: |
           ngrok config add-authtoken $NGROK_AUTH_TOKEN
           ngrok http 8006 --log=stdout > /dev/null &
           sleep 20
           
+          # We append ?view_only=1 to the URL automatically to skip the broken JS code
           URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
           echo "=========================================="
-          echo "CLICK THIS LINK TO FIX THE ERROR:"
-          echo "$URL/?view_only=1"
+          echo "CLICK THE LINK BELOW TO OPEN WINDOWS:"
+          echo "$URL/?view_only=1&autoconnect=1"
           echo "=========================================="
           
           docker logs -f windows
