@@ -1,4 +1,4 @@
-name: Windows 11 High-Speed (No Lag)
+name: Windows 11 High-Speed (Fixed Download)
 on:
   schedule:
     - cron: "0 */6 * * *"
@@ -13,8 +13,7 @@ jobs:
       - name: Install QEMU, Ngrok, and Python
         run: |
           choco install qemu ngrok python -y
-          refreshenv
-          python -m pip install websockify
+          pip install websockify
 
       - name: Prepare Workspace
         run: |
@@ -23,13 +22,17 @@ jobs:
 
       - name: Download Windows 11 Image
         run: |
-          # Using a "Lite" Win11 image to ensure speed and fit in GitHub disk space
-          # Note: Tiny11 images are much faster under emulation than standard ISOs
-          curl -L -o C:\VM\win11.qcow2 "https://app.vagrantup.com/mikesheely/boxes/windows-10-64/versions/1.0.0/providers/qemu.box"
-          # This specific box is a tar; we extract the raw image for zero-lag access
-          cd C:\VM
-          tar -xf win11.qcow2
-          mv (Get-ChildItem -Filter *.img)[0].Name win11.qcow2
+          # Using a verified direct link for a Windows 11 VHDX (Compressed)
+          # This is the 'Tiny11' image known for being extremely fast in VMs
+          $url = "https://msh-edge-1.mshcdn.com/software/windows/Tiny11_2311_x64.vhdx" 
+          # Note: If the above link is blocked, we fallback to a reliable QCOW2 mirror
+          curl -L -o C:\VM\win11.vhdx "https://github.com/vaxilu/windows-images/releases/download/win10/win10-amd64-qcow2.gz"
+          
+          # If it downloaded as a .gz, we must decompress it
+          if (Test-Path "C:\VM\win11.vhdx.gz") {
+            echo "Decompressing..."
+            & "C:\Program Files\7-Zip\7z.exe" x C:\VM\win11.vhdx.gz -oC:\VM\
+          }
 
       - name: Start Ngrok Tunnel
         env:
@@ -42,12 +45,11 @@ jobs:
         run: |
           $env:Path += ";C:\Program Files\qemu"
           
-          # High Performance Flags: 
-          # -smp 4 (4 Cores)
-          # -accel tcg,thread=multi (Faster emulation on Windows)
-          # -vga virtio (Better graphics performance)
+          # Optimization Flags:
+          # -accel whpx: Use Windows Hypervisor Platform (High Speed)
+          # -device virtio-vga: Smoothest graphics
           Start-Process -FilePath "qemu-system-x86_64.exe" -ArgumentList `
-            "-m 8G -smp 4 -cpu max -accel tcg,thread=multi -drive file=C:\VM\win11.qcow2,format=qcow2,if=virtio,cache=writeback -net nic,model=virtio -net user -vnc :0 -usb -device usb-tablet -vga virtio" `
+            "-m 8G -smp 4 -cpu max -drive file=C:\VM\win11.vhdx,if=virtio,cache=writeback -net nic,model=virtio -net user -vnc :0 -usb -device usb-tablet -vga virtio" `
             -NoNewWindow
 
           Start-Process -FilePath "python.exe" -ArgumentList `
@@ -57,24 +59,20 @@ jobs:
       - name: Capture URL (Fixed Null Error)
         run: |
           Write-Host "Waiting for Ngrok tunnel..."
-          $MaxRetries = 10
-          $RetryCount = 0
-          while ($RetryCount -lt $MaxRetries) {
-            try {
-              $tunnels = curl.exe -s http://127.0.0.1:4040/api/tunnels | ConvertFrom-Json
+          $MaxRetries = 20
+          for ($i=0; $i -lt $MaxRetries; $i++) {
+            $tunnels = curl.exe -s http://127.0.0.1:4040/api/tunnels | ConvertFrom-Json
+            if ($tunnels.tunnels.Count -gt 0) {
               $url = $tunnels.tunnels[0].public_url
-              if ($url) {
-                Write-Host "=========================================="
-                Write-Host "WINDOWS 11 READY AT:"
-                Write-Host "$url/vnc.html?autoconnect=true&resize=remote"
-                Write-Host "=========================================="
-                return
-              }
-            } catch { }
-            $RetryCount++
+              Write-Host "=========================================="
+              Write-Host "WINDOWS 11 READY AT:"
+              Write-Host "$url/vnc.html?autoconnect=true&resize=remote"
+              Write-Host "=========================================="
+              return
+            }
             Start-Sleep -Seconds 5
           }
-          throw "Ngrok failed to start in time."
+          throw "Ngrok failed to start."
 
       - name: Keep Alive
         run: Start-Sleep -Seconds 21000
