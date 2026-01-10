@@ -1,58 +1,58 @@
-name: AndroidCloudStream
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: '0 */5 * * *'
+name: Windows on noVNC
+on: 
+  workflow_dispatch: # Allows manual trigger
 
 jobs:
-  stream:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install ADB
+      - name: Install QEMU and noVNC
         run: |
           sudo apt-get update
-          sudo apt-get install -y adb
-
-      - name: Launch Android Container
+          sudo apt-get install -y qemu-system-x86 novnc python3-websockify
+          
+      - name: Download Windows ISO (Tiny10/Server)
         run: |
-          docker run -d -p 6080:80 -p 5555:5555 --name redroid --privileged redroid/redroid:11.0.0-latest
-          echo "Waiting for Android to boot..."
-          sleep 60
+          # Downloading a lightweight Windows image is faster. 
+          # This example uses a placeholder URL; replace with a direct link to your ISO.
+          curl -L -o windows.iso "https://example.com/path-to-your-windows.iso"
 
-      - name: Start Cloudflare Tunnel
+      - name: Create Virtual Disk
+        run: qemu-img create -f qcow2 windows.qcow2 20G
+
+      - name: Start QEMU and noVNC
         env:
-          GH_PAT: ${{ secrets.GH_PAT }}
-          GIST_ID: "a4b55baae4fc0ffc6f8b9e6ee7f12d75"
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
-          wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
-          chmod +x cloudflared
+          # 1. Install Ngrok
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt-get update && sudo apt-get install ngrok
           
-          # Wait for the server to be ready locally
-          timeout 60s bash -c 'until curl -s localhost:6080 > /dev/null; do sleep 2; done'
+          # 2. Authenticate Ngrok
+          ngrok config add-authtoken $NGROK_AUTH_TOKEN
           
-          ./cloudflared tunnel --url http://localhost:6080 --no-autoupdate > tunnel.log 2>&1 &
-          sleep 30
+          # 3. Start noVNC proxy (converts VNC to WebSockets) on port 6080
+          # We point it to localhost:5900 (default QEMU VNC port)
+          websockify --web /usr/share/novnc/ 6080 localhost:5900 &
           
-          TUNNEL_URL=$(grep -o 'https://.*\.trycloudflare\.com' tunnel.log | head -n 1)
-          echo "URL: $TUNNEL_URL"
+          # 4. Start Ngrok tunnel for the noVNC port
+          ngrok http 6080 --log=stdout > /dev/null &
           
-          if [ -n "$TUNNEL_URL" ]; then
-            curl -X PATCH -H "Authorization: token $GH_PAT" \
-                 -H "Content-Type: application/json" \
-                 -d "{\"files\":{\"gistfile1.txt\":{\"content\":\"$TUNNEL_URL\"}}}" \
-                 https://api.github.com/gists/$GIST_ID
-          fi
-
-      - name: Recursive Restart
-        if: always()
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
-        run: |
-          sleep 18900
-          curl -X POST -H "Authorization: token $GH_PAT" \
-               -H "Accept: application/vnd.github.v3+json" \
-               https://api.github.com/repos/${{ github.repository }}/actions/workflows/main.yml/dispatches \
-               -d '{"ref":"main"}'
+          echo "Waiting for Ngrok to generate URL..."
+          sleep 10
+          curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url'
+          
+          # 5. Launch Windows in QEMU
+          # -m 4G (RAM), -smp 2 (Cores)
+          qemu-system-x86_64 \
+            -m 4G \
+            -smp 2 \
+            -drive file=windows.qcow2,format=qcow2 \
+            -cdrom windows.iso \
+            -vnc :0 \
+            -net nic -net user \
+            -accel tcg
