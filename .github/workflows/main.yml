@@ -1,76 +1,74 @@
-name: RDP-noVNC-Final-V4
+## Setup Guacamole Browser Access
+name: Guacamole-Browser-RDP
+
 on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
+  guac-setup:
     runs-on: windows-latest
     timeout-minutes: 360
 
     steps:
-      - name: Install Tools
+      - name: Configure Windows RDP
         run: |
-          # Use Node.js version of websockify for better stability
-          choco install ultravnc python nodejs -y
-          npm install -g websockify
-          mkdir C:\noVNC
-          git clone https://github.com/novnc/noVNC.git C:\noVNC
+          # Enable RDP and allow through firewall
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+          
+          # Set Password for runneradmin
+          $password = "GuacPassword123!"
+          $user = [adsi]"WinNT://localhost/runneradmin,user"
+          $user.SetPassword($password)
 
-      - name: Disable Firewall & Configure VNC
+      - name: Install Guacamole Bridge (Node.js)
         run: |
-          Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
-          $vncPath = "C:\Program Files\uvnc bvba\UltraVNC"
-          $regPath = "HKLM:\SOFTWARE\UltraVNC\Default"
-          if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force }
-          # Pass: password
-          New-ItemProperty -Path $regPath -Name "Password" -Value ([byte[]](0x5E,0x2B,0xD3,0x64,0x90,0x6F,0x8F,0x00)) -PropertyType Binary -Force
-          New-ItemProperty -Path $regPath -Name "AllowLoopback" -Value 1 -PropertyType DWord -Force
-          New-ItemProperty -Path $regPath -Name "LoopbackOnly" -Value 0 -PropertyType DWord -Force
-          Start-Process -FilePath "$vncPath\winvnc.exe" -ArgumentList "-run" -NoNewWindow
+          # We use a combined bridge that provides the web UI and the tunnel
+          npm install -g guacamole-lite
+          
+          # Create a small script to run the bridge
+          $guacScript = @"
+          const GuacamoleLite = require('guacamole-lite');
+          const guacServer = new GuacamoleLite(
+              { port: 8080 },
+              { host: '127.0.0.1', port: 3389 },
+              { encryption: 'none' }
+          );
+          "@
+          $guacScript | Out-File -FilePath "guac-bridge.js"
 
-      - name: Start Websockify (Node Version)
-        run: |
-          # The Node.js version is 'websockify' globally installed
-          # We bridge 6080 to 5900
-          Start-Process -FilePath "cmd.exe" -ArgumentList "/c websockify 6080 localhost:5900 --web C:\noVNC" -NoNewWindow
-
-      - name: Verify Web Server
-        run: |
-          Write-Host "Waiting for noVNC to respond..."
-          for ($i=1; $i -le 30; $i++) {
-              try {
-                  # Test if the web server actually serves the page
-                  $response = Invoke-WebRequest -Uri "http://127.0.0.1:6080/vnc.html" -UseBasicParsing -ErrorAction Stop
-                  if ($response.StatusCode -eq 200) {
-                      Write-Host "SUCCESS: noVNC is responding on 6080."
-                      return
-                  }
-              } catch { }
-              Write-Host "Attempt ${i} ... Server warming up"
-              Start-Sleep -Seconds 3
-          }
-          throw "Server failed to start. Port 6080 is not responding."
-
-      - name: Connect Serveo Tunnel
+      - name: Start Guacamole and Tunnel
         shell: pwsh
         run: |
-          Write-Host "Connecting to Serveo..."
-          # Force IPv4 to ensure the tunnel matches the local listener
-          Start-Process ssh -ArgumentList "-o StrictHostKeyChecking=no -R 80:127.0.0.1:6080 serveo.net" -NoNewWindow -RedirectStandardOutput "serveo.log"
+          # 1. Start the bridge in the background
+          Start-Process node -ArgumentList "guac-bridge.js" -NoNewWindow
           
-          Start-Sleep -Seconds 15
-          $content = Get-Content "serveo.log" -ErrorAction SilentlyContinue
-          $match = $content | Select-String -Pattern "https://[a-zA-Z0-9.-]+"
+          # 2. Install and Start Cloudflare Tunnel
+          curl -L -o cloudflared.msi https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.msi
+          Start-Process msiexec.exe -ArgumentList "/i", "cloudflared.msi", "/quiet", "/norestart" -Wait
           
-          if ($match) {
-              $url = $match.Matches.Value
+          Write-Host "Starting Tunnel..."
+          Start-Process -FilePath "C:\Program Files (x86)\cloudflared\cloudflared.exe" -ArgumentList "tunnel --url http://localhost:8080" -NoNewWindow -RedirectStandardError "tunnel.log"
+
+      - name: Wait and Get Web Link
+        run: |
+          Write-Host "Warming up the browser interface..."
+          Start-Sleep -Seconds 30
+          
+          $content = Get-Content "tunnel.log"
+          $url = ($content | Select-String -Pattern "https://[a-zA-Z0-9.-]+").Matches.Value
+          
+          if ($url) {
               Write-Host "=========================================="
-              Write-Host "ACCESS WINDOWS HERE:"
-              Write-Host "$url/vnc.html?autoconnect=true"
-              Write-Host "VNC Password: password"
+              Write-Host "GUACAMOLE BROWSER ACCESS READY"
+              Write-Host "URL: $url"
+              Write-Host "------------------------------------------"
+              Write-Host "RDP User: runneradmin"
+              Write-Host "RDP Password: GuacPassword123!"
               Write-Host "=========================================="
           } else {
-              Get-Content "serveo.log"
+              Get-Content "tunnel.log"
               throw "Tunnel failed."
           }
 
@@ -78,5 +76,5 @@ jobs:
         run: |
           while ($true) {
             Start-Sleep -Seconds 300
-            Write-Host "Session active..."
+            Write-Host "Browser session active..."
           }
