@@ -1,4 +1,4 @@
-name: RDP-noVNC-Serveo-Final-v3
+name: RDP-noVNC-Final-V4
 on:
   workflow_dispatch:
 
@@ -10,57 +10,55 @@ jobs:
     steps:
       - name: Install Tools
         run: |
-          choco install ultravnc python -y
-          python -m pip install websockify
+          # Use Node.js version of websockify for better stability
+          choco install ultravnc python nodejs -y
+          npm install -g websockify
           mkdir C:\noVNC
           git clone https://github.com/novnc/noVNC.git C:\noVNC
 
       - name: Disable Firewall & Configure VNC
         run: |
-          # Kill Firewall
           Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
-          
-          # Registry Fixes for 502/Loopback issues
           $vncPath = "C:\Program Files\uvnc bvba\UltraVNC"
           $regPath = "HKLM:\SOFTWARE\UltraVNC\Default"
           if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force }
+          # Pass: password
           New-ItemProperty -Path $regPath -Name "Password" -Value ([byte[]](0x5E,0x2B,0xD3,0x64,0x90,0x6F,0x8F,0x00)) -PropertyType Binary -Force
           New-ItemProperty -Path $regPath -Name "AllowLoopback" -Value 1 -PropertyType DWord -Force
           New-ItemProperty -Path $regPath -Name "LoopbackOnly" -Value 0 -PropertyType DWord -Force
-          
           Start-Process -FilePath "$vncPath\winvnc.exe" -ArgumentList "-run" -NoNewWindow
 
-      - name: Start Websockify Bridge
+      - name: Start Websockify (Node Version)
         run: |
-          # Explicitly bind to 127.0.0.1 to avoid IPv6/localhost resolution 502s
-          Start-Process -FilePath "python.exe" -ArgumentList "-m websockify --web C:\noVNC 6080 127.0.0.1:5900" -NoNewWindow
+          # The Node.js version is 'websockify' globally installed
+          # We bridge 6080 to 5900
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c websockify 6080 localhost:5900 --web C:\noVNC" -NoNewWindow
 
-      - name: Verify Web Server (Fixed Parser)
+      - name: Verify Web Server
         run: |
           Write-Host "Waiting for noVNC to respond..."
           for ($i=1; $i -le 30; $i++) {
               try {
-                  $response = Invoke-WebRequest -Uri "http://127.0.0.1:6080" -UseBasicParsing -ErrorAction Stop
+                  # Test if the web server actually serves the page
+                  $response = Invoke-WebRequest -Uri "http://127.0.0.1:6080/vnc.html" -UseBasicParsing -ErrorAction Stop
                   if ($response.StatusCode -eq 200) {
-                      Write-Host "Success: Port 6080 is responding."
+                      Write-Host "SUCCESS: noVNC is responding on 6080."
                       return
                   }
-              } catch {
-                  # Silently wait
-              }
+              } catch { }
               Write-Host "Attempt ${i} ... Server warming up"
               Start-Sleep -Seconds 3
           }
-          throw "Server failed to start."
+          throw "Server failed to start. Port 6080 is not responding."
 
       - name: Connect Serveo Tunnel
         shell: pwsh
         run: |
           Write-Host "Connecting to Serveo..."
-          # Use 127.0.0.1 instead of localhost for the tunnel target
-          Start-Process ssh -ArgumentList "-o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes -R 80:127.0.0.1:6080 serveo.net" -NoNewWindow -RedirectStandardOutput "serveo.log"
+          # Force IPv4 to ensure the tunnel matches the local listener
+          Start-Process ssh -ArgumentList "-o StrictHostKeyChecking=no -R 80:127.0.0.1:6080 serveo.net" -NoNewWindow -RedirectStandardOutput "serveo.log"
           
-          Start-Sleep -Seconds 10
+          Start-Sleep -Seconds 15
           $content = Get-Content "serveo.log" -ErrorAction SilentlyContinue
           $match = $content | Select-String -Pattern "https://[a-zA-Z0-9.-]+"
           
