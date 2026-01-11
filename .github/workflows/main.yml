@@ -1,4 +1,4 @@
-name: RDP-noVNC-Localtunnel
+name: RDP-noVNC-Serveo-ULTIMATE
 on:
   workflow_dispatch:
 
@@ -8,21 +8,20 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Install noVNC and Dependencies
+      - name: Install noVNC and UltraVNC
         run: |
-          choco install ultravnc python nodejs -y
+          choco install ultravnc python -y
           python -m pip install websockify
-          npm install -g localtunnel
           mkdir C:\noVNC
           git clone https://github.com/novnc/noVNC.git C:\noVNC
 
-      - name: Start UltraVNC (App Mode)
+      - name: Start UltraVNC Server
         run: |
           $vncPath = "C:\Program Files\uvnc bvba\UltraVNC"
           stop-process -name winvnc -ErrorAction SilentlyContinue
           $regPath = "HKLM:\SOFTWARE\UltraVNC\Default"
           if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force }
-          # Set password to: password
+          # VNC Password: password
           New-ItemProperty -Path $regPath -Name "Password" -Value ([byte[]](0x5E,0x2B,0xD3,0x64,0x90,0x6F,0x8F,0x00)) -PropertyType Binary -Force
           Start-Process -FilePath "$vncPath\winvnc.exe" -ArgumentList "-run" -NoNewWindow
 
@@ -30,25 +29,18 @@ jobs:
         run: |
           Start-Process -FilePath "python.exe" -ArgumentList "-m websockify --web C:\noVNC 6080 localhost:5900" -NoNewWindow
 
-      - name: Launch Localtunnel
+      - name: Connect Tunnel via Serveo
+        shell: pwsh
         run: |
-          Write-Host "Starting Tunnel..."
-          # Start localtunnel and save the output to find the URL
-          Start-Process -FilePath "cmd.exe" -ArgumentList "/c lt --port 6080 > lt_info.txt" -NoNewWindow
+          Write-Host "Connecting to Serveo..."
+          # This command starts an SSH tunnel and stores the assigned URL
+          # -o StrictHostKeyChecking=no bypasses the fingerprint prompt
+          # -R 80:localhost:6080 forwards their web port to your local noVNC
+          $sshProcess = Start-Process ssh -ArgumentList "-o StrictHostKeyChecking=no -R 80:localhost:6080 serveo.net" -NoNewWindow -PassThru -RedirectStandardOutput "serveo.log"
           
-          Write-Host "Waiting for URL generation..."
-          $url = $null
-          for ($i=1; $i -le 20; $i++) {
-              if (Test-Path "lt_info.txt") {
-                  $content = Get-Content "lt_info.txt"
-                  if ($content -like "https://*") {
-                      $url = $content.Trim()
-                      break
-                  }
-              }
-              Start-Sleep -Seconds 3
-          }
-
+          Start-Sleep -Seconds 15
+          $url = Get-Content "serveo.log" | Select-String -Pattern "https://.*\.serveo\.net" | ForEach-Object { $_.Matches.Value }
+          
           if ($url) {
               Write-Host "=========================================="
               Write-Host "ACCESS YOUR WINDOWS HERE:"
@@ -56,12 +48,14 @@ jobs:
               Write-Host "VNC Password: password"
               Write-Host "=========================================="
           } else {
-              throw "Localtunnel failed to start."
+              Write-Host "Trying secondary extraction..."
+              Get-Content "serveo.log"
+              throw "Serveo failed to provide a URL. Check logs above."
           }
 
       - name: Keep Alive
         run: |
           while ($true) {
             Start-Sleep -Seconds 300
-            Write-Host "Session active..."
+            Write-Host "Session active. Use the URL above to connect."
           }
