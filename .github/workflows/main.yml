@@ -1,158 +1,54 @@
-name: Browser Windows VM
-
-on:
-  workflow_dispatch:
+name: Run SickCodes Android VM
+on: 
+  workflow_dispatch: # Allows you to run it manually with one click
 
 jobs:
-  browser-windows-vm:
-    runs-on: windows-latest
-    timeout-minutes: 3600
-
+  launch-android:
+    runs-on: ubuntu-latest
     steps:
-      - name: Configure RDP Settings
-        run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                           -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                           -Name "UserAuthentication" -Value 0 -Force
-          
-          netsh advfirewall firewall delete rule name="RDP-Web" -ErrorAction SilentlyContinue
-          netsh advfirewall firewall add rule name="RDP-Web" `
-            dir=in action=allow protocol=TCP localport=3389
-          
-          Restart-Service -Name TermService -Force
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-      - name: Create RDP User
+      - name: Enable KVM Hardware Acceleration
         run: |
-          $password = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 16 | % {[char]$_})
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "WebUser" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "WebUser"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "WebUser"
-          
-          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+          # Crucial for performance; allows the VM to use the host CPU
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
 
-      - name: Install Node.js and Dependencies
+      - name: Launch SickCodes Dock-Droid
         run: |
-          choco install nodejs -y
-          refreshenv
-          npm install -g localtunnel
+          # This pulls the BlissOS (Android x86) image
+          # We run it headlessly and expose ADB (5555) and VNC (5999)
+          docker run -d \
+            --name android-vm \
+            --device /dev/kvm \
+            -p 5555:5555 \
+            -p 5900:5999 \
+            -e EXTRA="-display none -vnc 0.0.0.0:99,password=off" \
+            sickcodes/dock-droid:latest
 
-      - name: Setup HTML5 RDP Client
+      - name: Wait for Android to Boot
         run: |
-          $webDir = "C:\rdp-web"
-          New-Item -Path $webDir -ItemType Directory -Force
+          echo "Waiting for Android to initialize..."
+          # Give it about 2 minutes to boot into the system
+          sleep 120
           
-          $html = '<html><head><title>Windows VM Access</title><style>body{margin:0;padding:20px;font-family:Arial,sans-serif;background:#1a1a1a;color:white}.container{max-width:800px;margin:0 auto;background:#2d2d2d;padding:30px;border-radius:10px}h1{color:#4CAF50}.info-box{background:#1a1a1a;padding:15px;border-radius:5px;margin:20px 0;border-left:4px solid #4CAF50}.credential{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #444}.label{font-weight:bold;color:#4CAF50}.value{font-family:monospace;background:#000;padding:4px 8px;border-radius:3px}button{background:#4CAF50;color:white;border:none;padding:12px 24px;border-radius:5px;cursor:pointer;font-size:16px;margin-top:20px}button:hover{background:#45a049}</style></head><body><div class="container"><h1>Windows VM - Remote Access</h1><div class="info-box"><h3>Connection Details</h3><div class="credential"><span class="label">Username:</span><span class="value">WebUser</span></div><div class="credential"><span class="label">Password:</span><span class="value" id="password">Check GitHub Logs</span></div><div class="credential"><span class="label">VM Address:</span><span class="value">localhost:3389</span></div></div><div style="background:#1a1a1a;padding:15px;border-radius:5px;margin-top:20px"><h3>How to Connect</h3><p><strong>Option 1: Download RDP File</strong></p><ol><li>Click the button below</li><li>Open the .rdp file with Remote Desktop</li><li>Enter the password from GitHub logs</li></ol><button onclick="downloadRDP()">Download RDP File</button><p style="margin-top:30px"><strong>Option 2: Manual Connection</strong></p><ol><li>Open Remote Desktop Connection</li><li>Connect to localhost:3389</li><li>Use credentials shown above</li></ol></div></div><script>function downloadRDP(){const rdp="full address:s:localhost:3389\nusername:s:WebUser\n";const blob=new Blob([rdp],{type:"application/x-rdp"});const url=window.URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="windows-vm.rdp";document.body.appendChild(a);a.click();document.body.removeChild(a);window.URL.revokeObjectURL(url);}</script></body></html>'
+      - name: Install VMOS Cloud APK
+        run: |
+          # Install ADB to talk to the container
+          sudo apt-get install -y adb
+          adb connect localhost:5555
           
-          $html | Out-File -FilePath "$webDir\index.html" -Encoding utf8
+          # Download your VMOS APK (Replace with your actual link)
+          wget -O vmos.apk "https://example.com/path-to-vmos-cloud.apk"
+          
+          # Push and install
+          adb install vmos.apk
+          echo "VMOS Cloud installed successfully."
 
-      - name: Start Simple Web Server
+      - name: Keep Alive (Optional)
         run: |
-          # Start a simple HTTP server using Python (comes with Windows runner)
-          Start-Process python -ArgumentList "-m", "http.server", "8080", "-d", "C:\rdp-web" -NoNewWindow
-          Start-Sleep -Seconds 5
-
-      - name: Create Cloudflare Tunnel
-        run: |
-          # Download Cloudflare Tunnel (cloudflared)
-          $cloudflaredUrl = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
-          Invoke-WebRequest -Uri $cloudflaredUrl -OutFile "C:\cloudflared.exe"
-          
-          # Start tunnel for web interface in background job
-          $job = Start-Job -ScriptBlock {
-              & "C:\cloudflared.exe" tunnel --url http://localhost:8080 --no-autoupdate 2>&1 | Tee-Object -FilePath "C:\cloudflared.log"
-          }
-          
-          Start-Sleep -Seconds 20
-          
-          # Get the public URL from job output
-          $publicUrl = $null
-          $retries = 0
-          while (-not $publicUrl -and $retries -lt 20) {
-              Start-Sleep -Seconds 2
-              
-              # Check job output
-              $jobOutput = Receive-Job -Job $job -Keep
-              $logText = $jobOutput -join "`n"
-              
-              if ($logText -match 'https://[a-zA-Z0-9-]+\.trycloudflare\.com') {
-                  $publicUrl = $matches[0]
-                  break
-              }
-              
-              # Also check log file
-              if (Test-Path "C:\cloudflared.log") {
-                  $logContent = Get-Content "C:\cloudflared.log" -Raw
-                  if ($logContent -match 'https://[a-zA-Z0-9-]+\.trycloudflare\.com') {
-                      $publicUrl = $matches[0]
-                      break
-                  }
-              }
-              
-              $retries++
-          }
-          
-          if ($publicUrl) {
-              echo "PUBLIC_URL=$publicUrl" >> $env:GITHUB_ENV
-              echo "CLOUDFLARED_JOB_ID=$($job.Id)" >> $env:GITHUB_ENV
-              Write-Host "✅ Public URL: $publicUrl"
-          } else {
-              Write-Host "📋 Cloudflared output:"
-              Receive-Job -Job $job -Keep
-              if (Test-Path "C:\cloudflared.log") {
-                  Write-Host "`n📋 Log file:"
-                  Get-Content "C:\cloudflared.log"
-              }
-              echo "PUBLIC_URL=Check output above for URL" >> $env:GITHUB_ENV
-          }
-
-      - name: Display Access Information
-        run: |
-          Write-Host "`n================================================"
-          Write-Host "🌐 BROWSER-BASED WINDOWS VM ACCESS"
-          Write-Host "================================================"
-          Write-Host ""
-          Write-Host "🔗 Web Interface: $env:PUBLIC_URL"
-          Write-Host ""
-          Write-Host "📝 Credentials:"
-          Write-Host "   Username: WebUser"
-          Write-Host "   Password: $env:RDP_PASSWORD"
-          Write-Host ""
-          Write-Host "💡 Instructions:"
-          Write-Host "   1. Open the Web Interface URL in your browser"
-          Write-Host "   2. Download the RDP configuration file"
-          Write-Host "   3. Open it with Remote Desktop Connection"
-          Write-Host "   4. Use the credentials shown above"
-          Write-Host ""
-          Write-Host "⚠️  Note: Cloudflare free tunnels expire after a few hours"
-          Write-Host "          Refresh the workflow if the link stops working"
-          Write-Host ""
-          Write-Host "================================================`n"
-
-      - name: Keep Alive
-        run: |
-          Write-Host "`n================================================"
-          Write-Host "🌐 VM is running and accessible"
-          Write-Host "================================================"
-          Write-Host "URL: $env:PUBLIC_URL"
-          Write-Host "Username: WebUser"
-          Write-Host "Password: $env:RDP_PASSWORD"
-          Write-Host "================================================`n"
-          
-          # Keep checking tunnel status
-          while ($true) {
-              $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-              Write-Host "[$timestamp] VM Active - URL: $env:PUBLIC_URL"
-              
-              # Check if web server is still running
-              try {
-                  $response = Invoke-WebRequest -Uri "http://localhost:8080" -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
-                  Write-Host "  ✅ Web server responsive"
-              } catch {
-                  Write-Host "  ⚠️ Web server check failed, restarting..."
-                  Start-Process python -ArgumentList "-m", "http.server", "8080", "-d", "C:\rdp-web" -NoNewWindow
-              }
-              
-              Start-Sleep -Seconds 300
-          }
+          # Keeps the workflow running for 1 hour so you can use it
+          echo "VM is running. You can use 'ssh -L 5900:localhost:5900' if you had a tunnel."
+          sleep 3600
