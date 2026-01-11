@@ -1,32 +1,25 @@
-name: Guacamole-Ngrok-Final
+name: Guac-Serveo-Direct
 on:
   workflow_dispatch:
 
 jobs:
-  setup-guac:
+  browser-rdp:
     runs-on: windows-latest
     timeout-minutes: 360
 
     steps:
-      - name: Configure Windows RDP
+      - name: Setup Windows RDP
         run: |
-          # Enable RDP and allow through firewall
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
-          
-          # Set Password for runneradmin
-          $password = "GuacPassword123!"
+          $password = "Password123!"
           $user = [adsi]"WinNT://localhost/runneradmin,user"
           $user.SetPassword($password)
 
-      - name: Install Guacamole Bridge & Ngrok
+      - name: Install Guac-Bridge
         run: |
-          # Install Node.js bridge and Ngrok
           npm install -g guacamole-lite
-          choco install ngrok -y
-          
-          # Create the bridge script
           $guacScript = @"
           const GuacamoleLite = require('guacamole-lite');
           const guacServer = new GuacamoleLite(
@@ -35,38 +28,30 @@ jobs:
               { encryption: 'none' }
           );
           "@
-          $guacScript | Out-File -FilePath "guac-bridge.js"
+          $guacScript | Out-File -FilePath "guac.js"
 
-      - name: Start Services
-        env:
-          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+      - name: Start Bridge and Tunnel
+        shell: pwsh
         run: |
-          # 1. Start the Guacamole bridge
-          Start-Process node -ArgumentList "guac-bridge.js" -NoNewWindow
+          # Start Guacamole
+          Start-Process node -ArgumentList "guac.js" -NoNewWindow
           
-          # 2. Start Ngrok HTTP tunnel
-          ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
-          Start-Process -FilePath "ngrok.exe" -ArgumentList "http 8080" -NoNewWindow
-
-      - name: Get Public URL
-        run: |
-          Write-Host "Waiting for Ngrok to stabilize..."
-          Start-Sleep -Seconds 15
-          
-          # Fetch the URL from Ngrok's local API
-          $tunnels = curl.exe -s http://127.0.0.1:4040/api/tunnels | ConvertFrom-Json
-          $url = $tunnels.tunnels[0].public_url
-          
-          if ($url) {
-              Write-Host "=========================================="
-              Write-Host "SUCCESS! NO MORE 1033 ERRORS."
-              Write-Host "BROWSER LINK: $url"
-              Write-Host "------------------------------------------"
-              Write-Host "User: runneradmin"
-              Write-Host "Pass: GuacPassword123!"
-              Write-Host "=========================================="
-          } else {
-              throw "Ngrok failed to start. Check your NGROK_AUTH_TOKEN secret."
+          Write-Host "Connecting to Tunnel..."
+          # Connect to Serveo with a manual retry loop
+          $max_retries = 5
+          for ($i=1; $i -le $max_retries; $i++) {
+              Start-Process ssh -ArgumentList "-o StrictHostKeyChecking=no -R 80:127.0.0.1:8080 serveo.net" -NoNewWindow -RedirectStandardOutput "tunnel.log"
+              Start-Sleep -Seconds 15
+              $url = (Get-Content "tunnel.log" -ErrorAction SilentlyContinue | Select-String -Pattern "https://[a-zA-Z0-9.-]+").Matches.Value
+              if ($url) {
+                  Write-Host "=========================================="
+                  Write-Host "LINK FOUND: $url"
+                  Write-Host "User: runneradmin"
+                  Write-Host "Pass: Password123!"
+                  Write-Host "=========================================="
+                  break
+              }
+              Write-Host "Retry $i: Tunnel didn't give a URL yet..."
           }
 
       - name: Keep Alive
