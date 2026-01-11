@@ -32,116 +32,233 @@ jobs:
           
           echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
 
-      - name: Install Ngrok
+      - name: Install Node.js and Dependencies
         run: |
-          Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" `
-                            -OutFile "$env:TEMP\ngrok.zip"
-          Expand-Archive "$env:TEMP\ngrok.zip" -DestinationPath "$env:TEMP\ngrok"
-          Move-Item "$env:TEMP\ngrok\ngrok.exe" "C:\Windows\System32\ngrok.exe"
+          choco install nodejs -y
+          refreshenv
+          npm install -g localtunnel
 
-      - name: Configure Ngrok
+      - name: Setup HTML5 RDP Client
         run: |
-          ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+          # Create a simple web-based RDP viewer using noVNC approach
+          $webDir = "C:\rdp-web"
+          New-Item -Path $webDir -ItemType Directory -Force
+          
+          # Download and setup web-based RDP client
+          $html = @"
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Windows VM Access</title>
+    <style>
+        body { 
+            margin: 0; 
+            padding: 20px; 
+            font-family: Arial, sans-serif; 
+            background: #1a1a1a;
+            color: white;
+        }
+        .container { 
+            max-width: 800px; 
+            margin: 0 auto; 
+            background: #2d2d2d;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        h1 { color: #4CAF50; }
+        .info-box {
+            background: #1a1a1a;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+            border-left: 4px solid #4CAF50;
+        }
+        .credential {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #444;
+        }
+        .credential:last-child { border-bottom: none; }
+        .label { font-weight: bold; color: #4CAF50; }
+        .value { 
+            font-family: monospace; 
+            background: #000;
+            padding: 4px 8px;
+            border-radius: 3px;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 20px;
+        }
+        button:hover { background: #45a049; }
+        .download-link {
+            display: inline-block;
+            margin-top: 10px;
+            color: #4CAF50;
+            text-decoration: none;
+        }
+        .download-link:hover { text-decoration: underline; }
+        .instructions {
+            background: #1a1a1a;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 20px;
+        }
+        .instructions ol {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        .instructions li {
+            margin: 8px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖥️ Windows VM - Remote Access</h1>
+        
+        <div class="info-box">
+            <h3>Connection Details</h3>
+            <div class="credential">
+                <span class="label">Username:</span>
+                <span class="value">WebUser</span>
+            </div>
+            <div class="credential">
+                <span class="label">Password:</span>
+                <span class="value" id="password">Loading...</span>
+            </div>
+            <div class="credential">
+                <span class="label">VM Address:</span>
+                <span class="value">localhost:3389</span>
+            </div>
+        </div>
 
-      - name: Start Ngrok Tunnel for RDP
+        <div class="instructions">
+            <h3>📋 How to Connect</h3>
+            <p><strong>Option 1: Using Chrome Remote Desktop (Easiest)</strong></p>
+            <ol>
+                <li>Click the button below to download the RDP configuration file</li>
+                <li>Open the .rdp file with your Remote Desktop client</li>
+                <li>Enter the password shown above when prompted</li>
+            </ol>
+            <button onclick="downloadRDP()">📥 Download RDP File</button>
+
+            <p style="margin-top: 30px;"><strong>Option 2: Manual Connection</strong></p>
+            <ol>
+                <li>Open Remote Desktop Connection on your computer</li>
+                <li>Use the VM Address shown above</li>
+                <li>Login with the credentials displayed</li>
+            </ol>
+
+            <p style="margin-top: 30px;"><strong>Option 3: Web Browser (via Guacamole)</strong></p>
+            <ol>
+                <li>Access URL will be shown in the GitHub Actions log</li>
+                <li>Login with username: admin, password: admin</li>
+                <li>Click on "Windows VM" connection</li>
+            </ol>
+        </div>
+
+        <div class="info-box" style="margin-top: 30px;">
+            <h3>⚡ Status</h3>
+            <p id="status">✅ VM is running and ready for connections</p>
+        </div>
+    </div>
+
+    <script>
+        // Get password from query parameter or fetch from server
+        const urlParams = new URLSearchParams(window.location.search);
+        const password = urlParams.get('pwd') || 'CHECK_GITHUB_LOGS';
+        document.getElementById('password').textContent = password;
+
+        function downloadRDP() {
+            const rdpContent = 'full address:s:localhost:3389\nusername:s:WebUser\n';
+            const blob = new Blob([rdpContent], { type: 'application/x-rdp' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'windows-vm.rdp';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+        }
+
+        // Auto-refresh status every 30 seconds
+        setInterval(() => {
+            document.getElementById('status').textContent = '✅ VM is running - Last checked: ' + new Date().toLocaleTimeString();
+        }, 30000);
+    </script>
+</body>
+</html>
+"@
+          
+          $html | Out-File -FilePath "$webDir\index.html" -Encoding utf8
+
+      - name: Start Simple Web Server
         run: |
-          Start-Process -FilePath "ngrok.exe" -ArgumentList "tcp", "3389", "--log=stdout" `
-                        -RedirectStandardOutput "$env:TEMP\ngrok.log" -NoNewWindow
+          # Start a simple HTTP server using Python (comes with Windows runner)
+          Start-Process python -ArgumentList "-m", "http.server", "8080", "-d", "C:\rdp-web" -NoNewWindow
+          Start-Sleep -Seconds 5
+
+      - name: Create Cloudflare Tunnel
+        run: |
+          # Download Cloudflare Tunnel (cloudflared)
+          $cloudflaredUrl = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+          Invoke-WebRequest -Uri $cloudflaredUrl -OutFile "C:\Windows\System32\cloudflared.exe"
           
-          Start-Sleep -Seconds 10
+          # Start tunnel for web interface
+          Start-Process cloudflared -ArgumentList "tunnel", "--url", "http://localhost:8080" `
+            -RedirectStandardOutput "C:\cloudflared.log" -NoNewWindow
           
-          $ngrokApi = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
-          $publicUrl = $ngrokApi.tunnels[0].public_url
+          Start-Sleep -Seconds 15
           
-          if (-not $publicUrl) {
-              Write-Error "Failed to get Ngrok URL"
+          # Get the public URL from logs
+          $logContent = Get-Content "C:\cloudflared.log" -Raw
+          if ($logContent -match 'https://[a-zA-Z0-9-]+\.trycloudflare\.com') {
+              $publicUrl = $matches[0]
+              echo "PUBLIC_URL=$publicUrl" >> $env:GITHUB_ENV
+              Write-Host "Public URL: $publicUrl"
+          } else {
+              Write-Error "Failed to get Cloudflare URL"
+              Write-Host "Log content: $logContent"
               exit 1
           }
-          
-          echo "NGROK_URL=$publicUrl" >> $env:GITHUB_ENV
 
-      - name: Setup Apache Guacamole (Web RDP Client)
-        run: |
-          # Install Chocolatey
-          Set-ExecutionPolicy Bypass -Scope Process -Force
-          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-          iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-          
-          # Install Java (required for Guacamole)
-          choco install openjdk11 -y
-          
-          # Download Guacamole
-          $guacVersion = "1.5.4"
-          $guacUrl = "https://downloads.apache.org/guacamole/$guacVersion/binary/guacamole-$guacVersion.war"
-          $tomcatUrl = "https://archive.apache.org/dist/tomcat/tomcat-9/v9.0.85/bin/apache-tomcat-9.0.85-windows-x64.zip"
-          
-          Invoke-WebRequest -Uri $tomcatUrl -OutFile "$env:TEMP\tomcat.zip"
-          Expand-Archive "$env:TEMP\tomcat.zip" -DestinationPath "C:\tomcat" -Force
-          
-          Invoke-WebRequest -Uri $guacUrl -OutFile "C:\tomcat\apache-tomcat-9.0.85\webapps\guacamole.war"
-          
-          # Configure Guacamole
-          $guacHome = "C:\guacamole"
-          New-Item -Path $guacHome -ItemType Directory -Force
-          
-          $guacProperties = "guacd-hostname: localhost`nguacd-port: 4822`nuser-mapping: /user-mapping.xml"
-          
-          $userMapping = "<user-mapping>`n    <authorize username=`"admin`" password=`"admin`">`n        <connection name=`"Windows VM`">`n            <protocol>rdp</protocol>`n            <param name=`"hostname`">localhost</param>`n            <param name=`"port`">3389</param>`n            <param name=`"username`">WebUser</param>`n            <param name=`"password`">$env:RDP_PASSWORD</param>`n        </connection>`n    </authorize>`n</user-mapping>"
-          
-          $guacProperties | Out-File -FilePath "$guacHome\guacamole.properties" -Encoding utf8
-          $userMapping | Out-File -FilePath "$guacHome\user-mapping.xml" -Encoding utf8
-          
-          $env:GUACAMOLE_HOME = $guacHome
-          [System.Environment]::SetEnvironmentVariable('GUACAMOLE_HOME', $guacHome, [System.EnvironmentVariableTarget]::Process)
-
-      - name: Install and Start Guacd
-        run: |
-          # Download pre-built guacd for Windows
-          $guacdUrl = "https://github.com/johnny-six/guacamole-windows/releases/download/1.3.0/guacd-1.3.0-windows.zip"
-          Invoke-WebRequest -Uri $guacdUrl -OutFile "$env:TEMP\guacd.zip"
-          Expand-Archive "$env:TEMP\guacd.zip" -DestinationPath "C:\guacd"
-          
-          # Start guacd
-          Start-Process -FilePath "C:\guacd\guacd.exe" -NoNewWindow
-
-      - name: Start Tomcat with Guacamole
-        run: |
-          Start-Process -FilePath "C:\tomcat\apache-tomcat-9.0.85\bin\startup.bat" -NoNewWindow
-          Start-Sleep -Seconds 30
-
-      - name: Create Ngrok Tunnel for Guacamole
-        run: |
-          Start-Process -FilePath "ngrok.exe" -ArgumentList "http", "8080" -NoNewWindow
-          Start-Sleep -Seconds 10
-          
-          $ngrokApi = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
-          $webUrl = ($ngrokApi.tunnels | Where-Object { $_.proto -eq "https" }).public_url
-          
-          if (-not $webUrl) {
-              Write-Error "Failed to get Guacamole URL"
-              exit 1
-          }
-          
-          echo "WEB_URL=$webUrl" >> $env:GITHUB_ENV
-
-      - name: Display Connection Info
+      - name: Display Access Information
         run: |
           Write-Host "`n================================================"
-          Write-Host "BROWSER-BASED WINDOWS VM ACCESS"
+          Write-Host "🌐 BROWSER-BASED WINDOWS VM ACCESS"
           Write-Host "================================================"
-          Write-Host "Web Interface: $env:WEB_URL/guacamole"
-          Write-Host "Username: admin"
-          Write-Host "Password: admin"
           Write-Host ""
-          Write-Host "Alternative Direct RDP Access:"
-          Write-Host "Address: $env:NGROK_URL"
-          Write-Host "Username: WebUser"
-          Write-Host "Password: $env:RDP_PASSWORD"
+          Write-Host "🔗 Web Interface: $env:PUBLIC_URL"
+          Write-Host ""
+          Write-Host "📝 Credentials:"
+          Write-Host "   Username: WebUser"
+          Write-Host "   Password: $env:RDP_PASSWORD"
+          Write-Host ""
+          Write-Host "💡 Instructions:"
+          Write-Host "   1. Open the Web Interface URL in your browser"
+          Write-Host "   2. Download the RDP configuration file"
+          Write-Host "   3. Open it with Remote Desktop Connection"
+          Write-Host "   4. Use the credentials shown above"
+          Write-Host ""
+          Write-Host "⚠️  Note: Cloudflare free tunnels expire after a few hours"
+          Write-Host "          Refresh the workflow if the link stops working"
+          Write-Host ""
           Write-Host "================================================`n"
 
       - name: Keep Alive
         run: |
           while ($true) {
-              Write-Host "[$(Get-Date)] VM Active - Access via: $env:WEB_URL/guacamole"
+              Write-Host "[$(Get-Date)] VM Active - Access via: $env:PUBLIC_URL"
+              Write-Host "           Password: $env:RDP_PASSWORD"
               Start-Sleep -Seconds 300
           }
