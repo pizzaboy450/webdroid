@@ -1,77 +1,162 @@
-name: Guacamole-Localtunnel-Fixed-Paths
+name: Browser Windows VM
+
 on:
   workflow_dispatch:
 
 jobs:
-  browser-rdp:
+  browser-windows-vm:
     runs-on: windows-latest
-    timeout-minutes: 360
+    timeout-minutes: 3600
 
     steps:
-      - name: Setup Windows RDP
+      - name: Configure RDP Settings
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
-          $password = "Password123!"
-          $user = [adsi]"WinNT://localhost/runneradmin,user"
-          $user.SetPassword($password)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                           -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                           -Name "UserAuthentication" -Value 0 -Force
+          
+          netsh advfirewall firewall delete rule name="RDP-Web" -ErrorAction SilentlyContinue
+          netsh advfirewall firewall add rule name="RDP-Web" `
+            dir=in action=allow protocol=TCP localport=3389
+          
+          Restart-Service -Name TermService -Force
 
-      - name: Install Guac-Bridge & Localtunnel
+      - name: Create RDP User
         run: |
-          # Install locally so Node.js can find the modules
-          npm install guacamole-lite localtunnel
+          $password = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 16 | % {[char]$_})
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "WebUser" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "WebUser"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "WebUser"
           
-          $guacScript = @"
-          const GuacamoleLite = require('guacamole-lite');
-          const guacServer = new GuacamoleLite(
-              { port: 8080 },
-              { host: '127.0.0.1', port: 3389 },
-              { encryption: 'none' }
-          );
-          console.log('Guacamole Bridge is Running...');
-          "@
-          $guacScript | Out-File -FilePath "guac.js"
+          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
 
-      - name: Start Bridge and Tunnel
-        shell: pwsh
+      - name: Install Ngrok
         run: |
-          # 1. Get the Password (IP Address)
-          $publicIP = (Invoke-WebRequest -Uri "https://ipv4.icanhazip.com").Content.Trim()
+          Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" `
+                            -OutFile "$env:TEMP\ngrok.zip"
+          Expand-Archive "$env:TEMP\ngrok.zip" -DestinationPath "$env:TEMP\ngrok"
+          Move-Item "$env:TEMP\ngrok\ngrok.exe" "C:\Windows\System32\ngrok.exe"
+
+      - name: Configure Ngrok
+        run: |
+          ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+
+      - name: Start Ngrok Tunnel for RDP
+        run: |
+          Start-Process -FilePath "ngrok.exe" -ArgumentList "tcp", "3389", "--log=stdout" `
+                        -RedirectStandardOutput "$env:TEMP\ngrok.log" -NoNewWindow
           
-          # 2. Start the Guacamole Web Bridge (Local execution)
-          Start-Process node -ArgumentList "guac.js" -NoNewWindow
+          Start-Sleep -Seconds 10
           
-          Write-Host "Starting Localtunnel..."
-          # 3. Use npx to run the locally installed localtunnel
-          Start-Process -FilePath "cmd.exe" -ArgumentList "/c npx lt --port 8080 > lt.log" -NoNewWindow
+          $ngrokApi = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
+          $publicUrl = $ngrokApi.tunnels[0].public_url
           
-          Write-Host "Waiting for Link..."
-          $url = $null
-          for ($i=1; $i -le 20; $i++) {
-              Start-Sleep -Seconds 5
-              if (Test-Path "lt.log") {
-                  $content = Get-Content "lt.log"
-                  $match = $content | Select-String -Pattern "https://.*\.loca\.lt"
-                  if ($match) {
-                      $url = $match.Matches.Value.Trim()
-                      Write-Host "=========================================="
-                      Write-Host "1. TUNNEL PASSWORD (IP): ${publicIP}"
-                      Write-Host "2. LINK: ${url}"
-                      Write-Host "------------------------------------------"
-                      Write-Host "RDP User: runneradmin"
-                      Write-Host "RDP Pass: Password123!"
-                      Write-Host "=========================================="
-                      break
-                  }
-              }
-              Write-Host "Attempt ${i} ... waiting for tunnel"
+          if (-not $publicUrl) {
+              Write-Error "Failed to get Ngrok URL"
+              exit 1
           }
-          if (-not $url) { throw "Tunnel failed." }
+          
+          echo "NGROK_URL=$publicUrl" >> $env:GITHUB_ENV
+
+      - name: Setup Apache Guacamole (Web RDP Client)
+        run: |
+          # Install Chocolatey
+          Set-ExecutionPolicy Bypass -Scope Process -Force
+          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+          iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+          
+          # Install Java (required for Guacamole)
+          choco install openjdk11 -y
+          
+          # Download Guacamole
+          $guacVersion = "1.5.4"
+          $guacUrl = "https://downloads.apache.org/guacamole/$guacVersion/binary/guacamole-$guacVersion.war"
+          $tomcatUrl = "https://dlcdn.apache.org/tomcat/tomcat-9/v9.0.85/bin/apache-tomcat-9.0.85-windows-x64.zip"
+          
+          Invoke-WebRequest -Uri $tomcatUrl -OutFile "$env:TEMP\tomcat.zip"
+          Expand-Archive "$env:TEMP\tomcat.zip" -DestinationPath "C:\tomcat"
+          
+          Invoke-WebRequest -Uri $guacUrl -OutFile "C:\tomcat\apache-tomcat-9.0.85\webapps\guacamole.war"
+          
+          # Configure Guacamole
+          $guacHome = "C:\guacamole"
+          New-Item -Path $guacHome -ItemType Directory -Force
+          
+          $guacProperties = @"
+guacd-hostname: localhost
+guacd-port: 4822
+user-mapping: /user-mapping.xml
+"@
+          
+          $userMapping = @"
+<user-mapping>
+    <authorize username="admin" password="admin">
+        <connection name="Windows VM">
+            <protocol>rdp</protocol>
+            <param name="hostname">localhost</param>
+            <param name="port">3389</param>
+            <param name="username">WebUser</param>
+            <param name="password">$env:RDP_PASSWORD</param>
+        </connection>
+    </authorize>
+</user-mapping>
+"@
+          
+          $guacProperties | Out-File -FilePath "$guacHome\guacamole.properties" -Encoding utf8
+          $userMapping | Out-File -FilePath "$guacHome\user-mapping.xml" -Encoding utf8
+          
+          [System.Environment]::SetEnvironmentVariable('GUACAMOLE_HOME', $guacHome, [System.EnvironmentVariableTarget]::Machine)
+
+      - name: Install and Start Guacd
+        run: |
+          # Download pre-built guacd for Windows
+          $guacdUrl = "https://github.com/johnny-six/guacamole-windows/releases/download/1.3.0/guacd-1.3.0-windows.zip"
+          Invoke-WebRequest -Uri $guacdUrl -OutFile "$env:TEMP\guacd.zip"
+          Expand-Archive "$env:TEMP\guacd.zip" -DestinationPath "C:\guacd"
+          
+          # Start guacd
+          Start-Process -FilePath "C:\guacd\guacd.exe" -NoNewWindow
+
+      - name: Start Tomcat with Guacamole
+        run: |
+          Start-Process -FilePath "C:\tomcat\apache-tomcat-9.0.85\bin\startup.bat" -NoNewWindow
+          Start-Sleep -Seconds 30
+
+      - name: Create Ngrok Tunnel for Guacamole
+        run: |
+          Start-Process -FilePath "ngrok.exe" -ArgumentList "http", "8080" -NoNewWindow
+          Start-Sleep -Seconds 10
+          
+          $ngrokApi = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
+          $webUrl = ($ngrokApi.tunnels | Where-Object { $_.proto -eq "https" }).public_url
+          
+          if (-not $webUrl) {
+              Write-Error "Failed to get Guacamole URL"
+              exit 1
+          }
+          
+          echo "WEB_URL=$webUrl" >> $env:GITHUB_ENV
+
+      - name: Display Connection Info
+        run: |
+          Write-Host "`n================================================"
+          Write-Host "BROWSER-BASED WINDOWS VM ACCESS"
+          Write-Host "================================================"
+          Write-Host "Web Interface: $env:WEB_URL/guacamole"
+          Write-Host "Username: admin"
+          Write-Host "Password: admin"
+          Write-Host ""
+          Write-Host "Alternative Direct RDP Access:"
+          Write-Host "Address: $env:NGROK_URL"
+          Write-Host "Username: WebUser"
+          Write-Host "Password: $env:RDP_PASSWORD"
+          Write-Host "================================================`n"
 
       - name: Keep Alive
         run: |
           while ($true) {
-            Start-Sleep -Seconds 300
-            Write-Host "Session active..."
+              Write-Host "[$(Get-Date)] VM Active - Access via: $env:WEB_URL/guacamole"
+              Start-Sleep -Seconds 300
           }
