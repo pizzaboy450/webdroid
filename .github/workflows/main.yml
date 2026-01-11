@@ -1,4 +1,4 @@
-name: Guacamole-Localtunnel-With-Password
+name: Guacamole-Localtunnel-Fixed-Paths
 on:
   workflow_dispatch:
 
@@ -19,7 +19,9 @@ jobs:
 
       - name: Install Guac-Bridge & Localtunnel
         run: |
-          npm install -g guacamole-lite localtunnel
+          # Install locally so Node.js can find the modules
+          npm install guacamole-lite localtunnel
+          
           $guacScript = @"
           const GuacamoleLite = require('guacamole-lite');
           const guacServer = new GuacamoleLite(
@@ -27,6 +29,7 @@ jobs:
               { host: '127.0.0.1', port: 3389 },
               { encryption: 'none' }
           );
+          console.log('Guacamole Bridge is Running...');
           "@
           $guacScript | Out-File -FilePath "guac.js"
 
@@ -36,11 +39,12 @@ jobs:
           # 1. Get the Password (IP Address)
           $publicIP = (Invoke-WebRequest -Uri "https://ipv4.icanhazip.com").Content.Trim()
           
-          # 2. Start the Guacamole Web Bridge
+          # 2. Start the Guacamole Web Bridge (Local execution)
           Start-Process node -ArgumentList "guac.js" -NoNewWindow
           
           Write-Host "Starting Localtunnel..."
-          Start-Process -FilePath "cmd.exe" -ArgumentList "/c lt --port 8080 > lt.log" -NoNewWindow
+          # 3. Use npx to run the locally installed localtunnel
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c npx lt --port 8080 > lt.log" -NoNewWindow
           
           Write-Host "Waiting for Link..."
           $url = $null
@@ -52,8 +56,8 @@ jobs:
                   if ($match) {
                       $url = $match.Matches.Value.Trim()
                       Write-Host "=========================================="
-                      Write-Host "TUNNEL PASSWORD (IP): ${publicIP}"
-                      Write-Host "LINK: ${url}"
+                      Write-Host "1. TUNNEL PASSWORD (IP): ${publicIP}"
+                      Write-Host "2. LINK: ${url}"
                       Write-Host "------------------------------------------"
                       Write-Host "RDP User: runneradmin"
                       Write-Host "RDP Pass: Password123!"
