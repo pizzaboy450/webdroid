@@ -1,4 +1,4 @@
-name: Guac-Serveo-Direct
+name: Guacamole-Localtunnel-Final
 on:
   workflow_dispatch:
 
@@ -17,9 +17,9 @@ jobs:
           $user = [adsi]"WinNT://localhost/runneradmin,user"
           $user.SetPassword($password)
 
-      - name: Install Guac-Bridge
+      - name: Install Guac-Bridge & Localtunnel
         run: |
-          npm install -g guacamole-lite
+          npm install -g guacamole-lite localtunnel
           $guacScript = @"
           const GuacamoleLite = require('guacamole-lite');
           const guacServer = new GuacamoleLite(
@@ -33,26 +33,35 @@ jobs:
       - name: Start Bridge and Tunnel
         shell: pwsh
         run: |
-          # Start Guacamole
+          # Start the Guacamole Web Bridge
           Start-Process node -ArgumentList "guac.js" -NoNewWindow
           
-          Write-Host "Connecting to Tunnel..."
-          # Connect to Serveo with a manual retry loop
-          $max_retries = 5
-          for ($i=1; $i -le $max_retries; $i++) {
-              Start-Process ssh -ArgumentList "-o StrictHostKeyChecking=no -R 80:127.0.0.1:8080 serveo.net" -NoNewWindow -RedirectStandardOutput "tunnel.log"
-              Start-Sleep -Seconds 15
-              $url = (Get-Content "tunnel.log" -ErrorAction SilentlyContinue | Select-String -Pattern "https://[a-zA-Z0-9.-]+").Matches.Value
-              if ($url) {
-                  Write-Host "=========================================="
-                  Write-Host "LINK FOUND: $url"
-                  Write-Host "User: runneradmin"
-                  Write-Host "Pass: Password123!"
-                  Write-Host "=========================================="
-                  break
+          Write-Host "Starting Localtunnel..."
+          # Start localtunnel and pipe to a file
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c lt --port 8080 > lt.log" -NoNewWindow
+          
+          Write-Host "Waiting for Link..."
+          $url = $null
+          for ($i=1; $i -le 20; $i++) {
+              Start-Sleep -Seconds 5
+              if (Test-Path "lt.log") {
+                  $content = Get-Content "lt.log"
+                  $match = $content | Select-String -Pattern "https://.*\.loca\.lt"
+                  if ($match) {
+                      $url = $match.Matches.Value.Trim()
+                      Write-Host "=========================================="
+                      Write-Host "BROWSER RDP READY"
+                      Write-Host "LINK: ${url}"
+                      Write-Host "User: runneradmin"
+                      Write-Host "Pass: Password123!"
+                      Write-Host "=========================================="
+                      break
+                  }
               }
-              Write-Host "Retry $i: Tunnel didn't give a URL yet..."
+              Write-Host "Attempt ${i} ... waiting for tunnel"
           }
+          
+          if (-not $url) { throw "Tunnel failed to generate a link." }
 
       - name: Keep Alive
         run: |
