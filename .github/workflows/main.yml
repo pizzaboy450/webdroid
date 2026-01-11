@@ -1,4 +1,4 @@
-name: RDP-noVNC-Serveo-No-502
+name: RDP-noVNC-Serveo-No-502-V2
 on:
   workflow_dispatch:
 
@@ -15,37 +15,52 @@ jobs:
           mkdir C:\noVNC
           git clone https://github.com/novnc/noVNC.git C:\noVNC
 
-      - name: Start UltraVNC
+      - name: Disable Windows Firewall
+        run: |
+          # This prevents the 502 error by allowing internal traffic
+          Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
+
+      - name: Start UltraVNC (Forced Local)
         run: |
           $vncPath = "C:\Program Files\uvnc bvba\UltraVNC"
           $regPath = "HKLM:\SOFTWARE\UltraVNC\Default"
           if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force }
+          # VNC Password: password
           New-ItemProperty -Path $regPath -Name "Password" -Value ([byte[]](0x5E,0x2B,0xD3,0x64,0x90,0x6F,0x8F,0x00)) -PropertyType Binary -Force
+          # Allow local loopback (essential for websockify bridge)
+          New-ItemProperty -Path $regPath -Name "AllowLoopback" -Value 1 -PropertyType DWord -Force
+          New-ItemProperty -Path $regPath -Name "LoopbackOnly" -Value 0 -PropertyType DWord -Force
+          
           Start-Process -FilePath "$vncPath\winvnc.exe" -ArgumentList "-run" -NoNewWindow
 
-      - name: Start Websockify & Verify Port
+      - name: Start Websockify Bridge
         run: |
-          # Start the bridge
-          Start-Process -FilePath "python.exe" -ArgumentList "-m websockify --web C:\noVNC 6080 localhost:5900" -NoNewWindow
-          
-          # Wait until port 6080 is actually open before continuing
-          Write-Host "Waiting for local web server on 6080..."
-          for ($i=1; $i -le 20; $i++) {
-              $check = Test-NetConnection -ComputerName localhost -Port 6080 -WarningAction SilentlyContinue
-              if ($check.TcpTestSucceeded) {
-                  Write-Host "Port 6080 is LIVE."
-                  return
+          # Bridge local VNC (5900) to web (6080)
+          Start-Process -FilePath "python.exe" -ArgumentList "-m websockify --web C:\noVNC 6080 127.0.0.1:5900" -NoNewWindow
+
+      - name: Verify Web Server is actually RESPONDING
+        run: |
+          Write-Host "Waiting for noVNC to respond to HTTP requests..."
+          for ($i=1; $i -le 30; $i++) {
+              try {
+                  $response = Invoke-WebRequest -Uri "http://127.0.0.1:6080" -UseBasicParsing
+                  if ($response.StatusCode -eq 200) {
+                      Write-Host "Web server is UP and responding with HTML."
+                      return
+                  }
+              } catch {
+                  # Server not ready yet
               }
-              Start-Sleep -Seconds 2
+              Write-Host "Attempt $i: Server still warming up..."
+              Start-Sleep -Seconds 3
           }
-          throw "Websockify failed to start on port 6080."
+          throw "Web server failed to respond in time."
 
       - name: Connect Serveo Tunnel
         shell: pwsh
         run: |
           Write-Host "Connecting to Serveo..."
-          # We use -o ExitOnForwardFailure=yes to make sure the tunnel is healthy
-          Start-Process ssh -ArgumentList "-o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes -R 80:localhost:6080 serveo.net" -NoNewWindow -RedirectStandardOutput "serveo.log"
+          Start-Process ssh -ArgumentList "-o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes -R 80:127.0.0.1:6080 serveo.net" -NoNewWindow -RedirectStandardOutput "serveo.log"
           
           Start-Sleep -Seconds 10
           $content = Get-Content "serveo.log" -ErrorAction SilentlyContinue
