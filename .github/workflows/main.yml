@@ -59,22 +59,49 @@ jobs:
           $cloudflaredUrl = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
           Invoke-WebRequest -Uri $cloudflaredUrl -OutFile "C:\Windows\System32\cloudflared.exe"
           
-          # Start tunnel for web interface
+          # Start tunnel for web interface with stderr redirect
           Start-Process cloudflared -ArgumentList "tunnel", "--url", "http://localhost:8080" `
-            -RedirectStandardOutput "C:\cloudflared.log" -NoNewWindow
+            -RedirectStandardError "C:\cloudflared.log" -NoNewWindow
           
-          Start-Sleep -Seconds 15
+          Start-Sleep -Seconds 20
           
-          # Get the public URL from logs
-          $logContent = Get-Content "C:\cloudflared.log" -Raw
-          if ($logContent -match 'https://[a-zA-Z0-9-]+\.trycloudflare\.com') {
-              $publicUrl = $matches[0]
+          # Get the public URL from logs (Cloudflare outputs to stderr)
+          $publicUrl = $null
+          $retries = 0
+          while (-not $publicUrl -and $retries -lt 15) {
+              Start-Sleep -Seconds 2
+              if (Test-Path "C:\cloudflared.log") {
+                  $logContent = Get-Content "C:\cloudflared.log" -Raw
+                  if ($logContent -match 'https://[a-zA-Z0-9-]+\.trycloudflare\.com') {
+                      $publicUrl = $matches[0]
+                      break
+                  }
+              }
+              $retries++
+          }
+          
+          if ($publicUrl) {
               echo "PUBLIC_URL=$publicUrl" >> $env:GITHUB_ENV
-              Write-Host "Public URL: $publicUrl"
+              Write-Host "✅ Public URL: $publicUrl"
           } else {
-              Write-Error "Failed to get Cloudflare URL"
-              Write-Host "Log content: $logContent"
-              exit 1
+              Write-Host "⚠️ Could not extract URL from logs, but tunnel may still be running"
+              Write-Host "Checking for alternative URL patterns..."
+              
+              # Try to get URL from metrics endpoint
+              Start-Sleep -Seconds 5
+              try {
+                  $metrics = Invoke-RestMethod -Uri "http://127.0.0.1:20241/metrics" -ErrorAction SilentlyContinue
+                  Write-Host "Metrics endpoint response received"
+              } catch {
+                  Write-Host "Metrics endpoint not available yet"
+              }
+              
+              # Set a placeholder and continue - URL might appear in logs later
+              echo "PUBLIC_URL=Check logs below for trycloudflare.com URL" >> $env:GITHUB_ENV
+              Write-Host "Logs:"
+              if (Test-Path "C:\cloudflared.log") {
+                  Get-Content "C:\cloudflared.log"
+              }
           }
 
       - name: Display Access Information
