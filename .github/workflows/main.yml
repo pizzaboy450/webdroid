@@ -1,4 +1,4 @@
-name: RDP-noVNC-Serveo-ULTIMATE
+name: RDP-noVNC-Serveo-Fixed
 on:
   workflow_dispatch:
 
@@ -8,54 +8,62 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Install noVNC and UltraVNC
+      - name: Install Tools
         run: |
           choco install ultravnc python -y
           python -m pip install websockify
           mkdir C:\noVNC
           git clone https://github.com/novnc/noVNC.git C:\noVNC
 
-      - name: Start UltraVNC Server
+      - name: Start UltraVNC
         run: |
           $vncPath = "C:\Program Files\uvnc bvba\UltraVNC"
-          stop-process -name winvnc -ErrorAction SilentlyContinue
+          # Password is set to: password
           $regPath = "HKLM:\SOFTWARE\UltraVNC\Default"
           if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force }
-          # VNC Password: password
           New-ItemProperty -Path $regPath -Name "Password" -Value ([byte[]](0x5E,0x2B,0xD3,0x64,0x90,0x6F,0x8F,0x00)) -PropertyType Binary -Force
           Start-Process -FilePath "$vncPath\winvnc.exe" -ArgumentList "-run" -NoNewWindow
 
-      - name: Start Websockify Bridge
+      - name: Start Websockify
         run: |
           Start-Process -FilePath "python.exe" -ArgumentList "-m websockify --web C:\noVNC 6080 localhost:5900" -NoNewWindow
 
-      - name: Connect Tunnel via Serveo
+      - name: Connect Serveo Tunnel
         shell: pwsh
         run: |
           Write-Host "Connecting to Serveo..."
-          # This command starts an SSH tunnel and stores the assigned URL
-          # -o StrictHostKeyChecking=no bypasses the fingerprint prompt
-          # -R 80:localhost:6080 forwards their web port to your local noVNC
+          # We use a broad regex to catch both .serveo.net and .serveousercontent.com
           $sshProcess = Start-Process ssh -ArgumentList "-o StrictHostKeyChecking=no -R 80:localhost:6080 serveo.net" -NoNewWindow -PassThru -RedirectStandardOutput "serveo.log"
           
-          Start-Sleep -Seconds 15
-          $url = Get-Content "serveo.log" | Select-String -Pattern "https://.*\.serveo\.net" | ForEach-Object { $_.Matches.Value }
+          Write-Host "Waiting for URL..."
+          $url = $null
+          for ($i=1; $i -le 10; $i++) {
+              Start-Sleep -Seconds 5
+              $content = Get-Content "serveo.log" -ErrorAction SilentlyContinue
+              # Improved Regex to catch any https link provided by Serveo
+              $match = $content | Select-String -Pattern "https://[a-zA-Z0-9.-]+" 
+              if ($match) {
+                  $url = $match.Matches.Value.Trim()
+                  break
+              }
+              Write-Host "Checking logs... attempt $i"
+          }
           
           if ($url) {
               Write-Host "=========================================="
-              Write-Host "ACCESS YOUR WINDOWS HERE:"
+              Write-Host "SUCCESS! ACCESS WINDOWS HERE:"
               Write-Host "$url/vnc.html?autoconnect=true"
               Write-Host "VNC Password: password"
               Write-Host "=========================================="
           } else {
-              Write-Host "Trying secondary extraction..."
+              Write-Host "--- DEBUG LOG CONTENT ---"
               Get-Content "serveo.log"
-              throw "Serveo failed to provide a URL. Check logs above."
+              throw "URL Extraction failed."
           }
 
       - name: Keep Alive
         run: |
           while ($true) {
             Start-Sleep -Seconds 300
-            Write-Host "Session active. Use the URL above to connect."
+            Write-Host "Still running..."
           }
