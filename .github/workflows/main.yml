@@ -1,11 +1,9 @@
-## Setup Guacamole Browser Access
-name: Guacamole-Browser-RDP
-
+name: Guacamole-Ngrok-Final
 on:
   workflow_dispatch:
 
 jobs:
-  guac-setup:
+  setup-guac:
     runs-on: windows-latest
     timeout-minutes: 360
 
@@ -22,12 +20,13 @@ jobs:
           $user = [adsi]"WinNT://localhost/runneradmin,user"
           $user.SetPassword($password)
 
-      - name: Install Guacamole Bridge (Node.js)
+      - name: Install Guacamole Bridge & Ngrok
         run: |
-          # We use a combined bridge that provides the web UI and the tunnel
+          # Install Node.js bridge and Ngrok
           npm install -g guacamole-lite
+          choco install ngrok -y
           
-          # Create a small script to run the bridge
+          # Create the bridge script
           $guacScript = @"
           const GuacamoleLite = require('guacamole-lite');
           const guacServer = new GuacamoleLite(
@@ -38,43 +37,41 @@ jobs:
           "@
           $guacScript | Out-File -FilePath "guac-bridge.js"
 
-      - name: Start Guacamole and Tunnel
-        shell: pwsh
+      - name: Start Services
+        env:
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
-          # 1. Start the bridge in the background
+          # 1. Start the Guacamole bridge
           Start-Process node -ArgumentList "guac-bridge.js" -NoNewWindow
           
-          # 2. Install and Start Cloudflare Tunnel
-          curl -L -o cloudflared.msi https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.msi
-          Start-Process msiexec.exe -ArgumentList "/i", "cloudflared.msi", "/quiet", "/norestart" -Wait
-          
-          Write-Host "Starting Tunnel..."
-          Start-Process -FilePath "C:\Program Files (x86)\cloudflared\cloudflared.exe" -ArgumentList "tunnel --url http://localhost:8080" -NoNewWindow -RedirectStandardError "tunnel.log"
+          # 2. Start Ngrok HTTP tunnel
+          ngrok config add-authtoken $env:NGROK_AUTH_TOKEN
+          Start-Process -FilePath "ngrok.exe" -ArgumentList "http 8080" -NoNewWindow
 
-      - name: Wait and Get Web Link
+      - name: Get Public URL
         run: |
-          Write-Host "Warming up the browser interface..."
-          Start-Sleep -Seconds 30
+          Write-Host "Waiting for Ngrok to stabilize..."
+          Start-Sleep -Seconds 15
           
-          $content = Get-Content "tunnel.log"
-          $url = ($content | Select-String -Pattern "https://[a-zA-Z0-9.-]+").Matches.Value
+          # Fetch the URL from Ngrok's local API
+          $tunnels = curl.exe -s http://127.0.0.1:4040/api/tunnels | ConvertFrom-Json
+          $url = $tunnels.tunnels[0].public_url
           
           if ($url) {
               Write-Host "=========================================="
-              Write-Host "GUACAMOLE BROWSER ACCESS READY"
-              Write-Host "URL: $url"
+              Write-Host "SUCCESS! NO MORE 1033 ERRORS."
+              Write-Host "BROWSER LINK: $url"
               Write-Host "------------------------------------------"
-              Write-Host "RDP User: runneradmin"
-              Write-Host "RDP Password: GuacPassword123!"
+              Write-Host "User: runneradmin"
+              Write-Host "Pass: GuacPassword123!"
               Write-Host "=========================================="
           } else {
-              Get-Content "tunnel.log"
-              throw "Tunnel failed."
+              throw "Ngrok failed to start. Check your NGROK_AUTH_TOKEN secret."
           }
 
       - name: Keep Alive
         run: |
           while ($true) {
             Start-Sleep -Seconds 300
-            Write-Host "Browser session active..."
+            Write-Host "Session active..."
           }
