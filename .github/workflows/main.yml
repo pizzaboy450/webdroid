@@ -1,4 +1,4 @@
-name: Guacamole-Localtunnel-Final
+name: Guacamole-Localtunnel-With-Password
 on:
   workflow_dispatch:
 
@@ -33,11 +33,13 @@ jobs:
       - name: Start Bridge and Tunnel
         shell: pwsh
         run: |
-          # Start the Guacamole Web Bridge
+          # 1. Get the Password (IP Address)
+          $publicIP = (Invoke-WebRequest -Uri "https://ipv4.icanhazip.com").Content.Trim()
+          
+          # 2. Start the Guacamole Web Bridge
           Start-Process node -ArgumentList "guac.js" -NoNewWindow
           
           Write-Host "Starting Localtunnel..."
-          # Start localtunnel and pipe to a file
           Start-Process -FilePath "cmd.exe" -ArgumentList "/c lt --port 8080 > lt.log" -NoNewWindow
           
           Write-Host "Waiting for Link..."
@@ -50,18 +52,18 @@ jobs:
                   if ($match) {
                       $url = $match.Matches.Value.Trim()
                       Write-Host "=========================================="
-                      Write-Host "BROWSER RDP READY"
+                      Write-Host "TUNNEL PASSWORD (IP): ${publicIP}"
                       Write-Host "LINK: ${url}"
-                      Write-Host "User: runneradmin"
-                      Write-Host "Pass: Password123!"
+                      Write-Host "------------------------------------------"
+                      Write-Host "RDP User: runneradmin"
+                      Write-Host "RDP Pass: Password123!"
                       Write-Host "=========================================="
                       break
                   }
               }
               Write-Host "Attempt ${i} ... waiting for tunnel"
           }
-          
-          if (-not $url) { throw "Tunnel failed to generate a link." }
+          if (-not $url) { throw "Tunnel failed." }
 
       - name: Keep Alive
         run: |
