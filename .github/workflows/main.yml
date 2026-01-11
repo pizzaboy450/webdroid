@@ -1,4 +1,4 @@
-name: RDP-noVNC-Serveo-No-502-V2
+name: RDP-noVNC-Serveo-Final-v3
 on:
   workflow_dispatch:
 
@@ -15,19 +15,16 @@ jobs:
           mkdir C:\noVNC
           git clone https://github.com/novnc/noVNC.git C:\noVNC
 
-      - name: Disable Windows Firewall
+      - name: Disable Firewall & Configure VNC
         run: |
-          # This prevents the 502 error by allowing internal traffic
+          # Kill Firewall
           Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
-
-      - name: Start UltraVNC (Forced Local)
-        run: |
+          
+          # Registry Fixes for 502/Loopback issues
           $vncPath = "C:\Program Files\uvnc bvba\UltraVNC"
           $regPath = "HKLM:\SOFTWARE\UltraVNC\Default"
           if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force }
-          # VNC Password: password
           New-ItemProperty -Path $regPath -Name "Password" -Value ([byte[]](0x5E,0x2B,0xD3,0x64,0x90,0x6F,0x8F,0x00)) -PropertyType Binary -Force
-          # Allow local loopback (essential for websockify bridge)
           New-ItemProperty -Path $regPath -Name "AllowLoopback" -Value 1 -PropertyType DWord -Force
           New-ItemProperty -Path $regPath -Name "LoopbackOnly" -Value 0 -PropertyType DWord -Force
           
@@ -35,46 +32,48 @@ jobs:
 
       - name: Start Websockify Bridge
         run: |
-          # Bridge local VNC (5900) to web (6080)
+          # Explicitly bind to 127.0.0.1 to avoid IPv6/localhost resolution 502s
           Start-Process -FilePath "python.exe" -ArgumentList "-m websockify --web C:\noVNC 6080 127.0.0.1:5900" -NoNewWindow
 
-      - name: Verify Web Server is actually RESPONDING
+      - name: Verify Web Server (Fixed Parser)
         run: |
-          Write-Host "Waiting for noVNC to respond to HTTP requests..."
+          Write-Host "Waiting for noVNC to respond..."
           for ($i=1; $i -le 30; $i++) {
               try {
-                  $response = Invoke-WebRequest -Uri "http://127.0.0.1:6080" -UseBasicParsing
+                  $response = Invoke-WebRequest -Uri "http://127.0.0.1:6080" -UseBasicParsing -ErrorAction Stop
                   if ($response.StatusCode -eq 200) {
-                      Write-Host "Web server is UP and responding with HTML."
+                      Write-Host "Success: Port 6080 is responding."
                       return
                   }
               } catch {
-                  # Server not ready yet
+                  # Silently wait
               }
-              Write-Host "Attempt $i: Server still warming up..."
+              Write-Host "Attempt ${i} ... Server warming up"
               Start-Sleep -Seconds 3
           }
-          throw "Web server failed to respond in time."
+          throw "Server failed to start."
 
       - name: Connect Serveo Tunnel
         shell: pwsh
         run: |
           Write-Host "Connecting to Serveo..."
+          # Use 127.0.0.1 instead of localhost for the tunnel target
           Start-Process ssh -ArgumentList "-o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes -R 80:127.0.0.1:6080 serveo.net" -NoNewWindow -RedirectStandardOutput "serveo.log"
           
           Start-Sleep -Seconds 10
           $content = Get-Content "serveo.log" -ErrorAction SilentlyContinue
-          $url = ($content | Select-String -Pattern "https://[a-zA-Z0-9.-]+").Matches.Value
+          $match = $content | Select-String -Pattern "https://[a-zA-Z0-9.-]+"
           
-          if ($url) {
+          if ($match) {
+              $url = $match.Matches.Value
               Write-Host "=========================================="
-              Write-Host "SUCCESS! ACCESS WINDOWS HERE:"
+              Write-Host "ACCESS WINDOWS HERE:"
               Write-Host "$url/vnc.html?autoconnect=true"
               Write-Host "VNC Password: password"
               Write-Host "=========================================="
           } else {
               Get-Content "serveo.log"
-              throw "URL Extraction failed."
+              throw "Tunnel failed."
           }
 
       - name: Keep Alive
