@@ -73,10 +73,10 @@ jobs:
           # Download Guacamole
           $guacVersion = "1.5.4"
           $guacUrl = "https://downloads.apache.org/guacamole/$guacVersion/binary/guacamole-$guacVersion.war"
-          $tomcatUrl = "https://dlcdn.apache.org/tomcat/tomcat-9/v9.0.85/bin/apache-tomcat-9.0.85-windows-x64.zip"
+          $tomcatUrl = "https://archive.apache.org/dist/tomcat/tomcat-9/v9.0.85/bin/apache-tomcat-9.0.85-windows-x64.zip"
           
           Invoke-WebRequest -Uri $tomcatUrl -OutFile "$env:TEMP\tomcat.zip"
-          Expand-Archive "$env:TEMP\tomcat.zip" -DestinationPath "C:\tomcat"
+          Expand-Archive "$env:TEMP\tomcat.zip" -DestinationPath "C:\tomcat" -Force
           
           Invoke-WebRequest -Uri $guacUrl -OutFile "C:\tomcat\apache-tomcat-9.0.85\webapps\guacamole.war"
           
@@ -84,30 +84,15 @@ jobs:
           $guacHome = "C:\guacamole"
           New-Item -Path $guacHome -ItemType Directory -Force
           
-          $guacProperties = @"
-guacd-hostname: localhost
-guacd-port: 4822
-user-mapping: /user-mapping.xml
-"@
+          $guacProperties = "guacd-hostname: localhost`nguacd-port: 4822`nuser-mapping: /user-mapping.xml"
           
-          $userMapping = @"
-<user-mapping>
-    <authorize username="admin" password="admin">
-        <connection name="Windows VM">
-            <protocol>rdp</protocol>
-            <param name="hostname">localhost</param>
-            <param name="port">3389</param>
-            <param name="username">WebUser</param>
-            <param name="password">$env:RDP_PASSWORD</param>
-        </connection>
-    </authorize>
-</user-mapping>
-"@
+          $userMapping = "<user-mapping>`n    <authorize username=`"admin`" password=`"admin`">`n        <connection name=`"Windows VM`">`n            <protocol>rdp</protocol>`n            <param name=`"hostname`">localhost</param>`n            <param name=`"port`">3389</param>`n            <param name=`"username`">WebUser</param>`n            <param name=`"password`">$env:RDP_PASSWORD</param>`n        </connection>`n    </authorize>`n</user-mapping>"
           
           $guacProperties | Out-File -FilePath "$guacHome\guacamole.properties" -Encoding utf8
           $userMapping | Out-File -FilePath "$guacHome\user-mapping.xml" -Encoding utf8
           
-          [System.Environment]::SetEnvironmentVariable('GUACAMOLE_HOME', $guacHome, [System.EnvironmentVariableTarget]::Machine)
+          $env:GUACAMOLE_HOME = $guacHome
+          [System.Environment]::SetEnvironmentVariable('GUACAMOLE_HOME', $guacHome, [System.EnvironmentVariableTarget]::Process)
 
       - name: Install and Start Guacd
         run: |
