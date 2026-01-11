@@ -1,50 +1,67 @@
-name: Windows GUI via Tmate
+name: RDP-noVNC-Localtunnel
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  secure-rdp:
     runs-on: windows-latest
+    timeout-minutes: 360
+
     steps:
-      - name: Install Tmate and UltraVNC
+      - name: Install noVNC and Dependencies
         run: |
-          choco install tmate ultravnc python -y
+          choco install ultravnc python nodejs -y
           python -m pip install websockify
+          npm install -g localtunnel
           mkdir C:\noVNC
           git clone https://github.com/novnc/noVNC.git C:\noVNC
 
-      - name: Start VNC Engine
+      - name: Start UltraVNC (App Mode)
         run: |
           $vncPath = "C:\Program Files\uvnc bvba\UltraVNC"
-          # Password: password
+          stop-process -name winvnc -ErrorAction SilentlyContinue
           $regPath = "HKLM:\SOFTWARE\UltraVNC\Default"
           if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force }
+          # Set password to: password
           New-ItemProperty -Path $regPath -Name "Password" -Value ([byte[]](0x5E,0x2B,0xD3,0x64,0x90,0x6F,0x8F,0x00)) -PropertyType Binary -Force
           Start-Process -FilePath "$vncPath\winvnc.exe" -ArgumentList "-run" -NoNewWindow
-          
-          # Start the bridge to make VNC web-accessible locally
+
+      - name: Start Websockify Bridge
+        run: |
           Start-Process -FilePath "python.exe" -ArgumentList "-m websockify --web C:\noVNC 6080 localhost:5900" -NoNewWindow
 
-      - name: Launch Tmate Tunnel
-        shell: cmd
+      - name: Launch Localtunnel
         run: |
-          :: This starts tmate and saves the connection info to a file
-          start /b tmate -S /tmp/tmate.sock new-session -d
-          tmate -S /tmp/tmate.sock wait-for-session
-          tmate -S /tmp/tmate.sock display -p "#{tmate_web}" > tmate_url.txt
+          Write-Host "Starting Tunnel..."
+          # Start localtunnel and save the output to find the URL
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c lt --port 6080 > lt_info.txt" -NoNewWindow
+          
+          Write-Host "Waiting for URL generation..."
+          $url = $null
+          for ($i=1; $i -le 20; $i++) {
+              if (Test-Path "lt_info.txt") {
+                  $content = Get-Content "lt_info.txt"
+                  if ($content -like "https://*") {
+                      $url = $content.Trim()
+                      break
+                  }
+              }
+              Start-Sleep -Seconds 3
+          }
 
-      - name: Get Connection Links
-        run: |
-          $tmateUrl = Get-Content tmate_url.txt
-          Write-Host "=========================================="
-          Write-Host "STEP 1: OPEN THIS TERMINAL LINK:"
-          Write-Host "$tmateUrl"
-          Write-Host "=========================================="
-          Write-Host "STEP 2: IN THAT TERMINAL, PASTE THIS:"
-          Write-Host "curl -s localhost:6080"
-          Write-Host "=========================================="
+          if ($url) {
+              Write-Host "=========================================="
+              Write-Host "ACCESS YOUR WINDOWS HERE:"
+              Write-Host "$url/vnc.html?autoconnect=true"
+              Write-Host "VNC Password: password"
+              Write-Host "=========================================="
+          } else {
+              throw "Localtunnel failed to start."
+          }
 
       - name: Keep Alive
         run: |
-          Write-Host "Runner is active. If tmate disconnects, the job ends."
-          Start-Sleep -Seconds 21600
+          while ($true) {
+            Start-Sleep -Seconds 300
+            Write-Host "Session active..."
+          }
